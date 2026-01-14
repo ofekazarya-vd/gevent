@@ -439,7 +439,8 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
-            self._switch_to_hub(self.hub)
+            the_hub = self.hub if self.hub is not None else get_hub()
+            self._switch_to_hub(the_hub)
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None
         finally:
