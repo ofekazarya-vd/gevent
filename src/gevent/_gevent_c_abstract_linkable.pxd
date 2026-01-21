@@ -46,7 +46,8 @@ cdef class AbstractLinkable(object):
    cdef object __weakref__
 
    cdef readonly SwitchOutGreenletWithLoop hub
-
+ 
+   cdef str hub_none
    cdef _notifier
    cdef list _links
    cdef bint _notify_all

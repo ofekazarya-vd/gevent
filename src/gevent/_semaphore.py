@@ -232,6 +232,10 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
 
         if self._multithreaded is not _MULTI and self.hub is None: # pylint:disable=access-member-before-definition
             self.hub = get_hub() # pylint:disable=attribute-defined-outside-init
+            if self.hub is None:
+                self.hub_none = "_sem_acquire %s" % self._get_thread_ident()
+            else:
+                self.hub_none = "reset _sem_acquire %s" % self._get_thread_ident()
 
         if self.hub is None and not invalid_thread_use:
             # Someone else is holding us. There's not a hub here,
@@ -506,6 +510,9 @@ class BoundedSemaphore(Semaphore):
         # uses.
         if counter == self._initial_value:
             self.hub = None # pylint:disable=attribute-defined-outside-init
+            self.hub_none = "_bounded_sem_release %s counter=%s _multithreaded=%s _multithreaded is _UNSET=%s _multithreaded is _MULTI=%s" % (
+                self._get_thread_ident(), counter, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI)
+
         return counter
 
     def _at_fork_reinit(self):

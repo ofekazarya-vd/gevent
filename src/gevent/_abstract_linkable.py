@@ -78,7 +78,7 @@ class AbstractLinkable(object):
     # the same algorithm as Greenlet. See about unifying them more.
 
     __slots__ = (
-        'hub',
+        'hub', 'hub_none',
         '_links',
         '_notifier',
         '_notify_all',
@@ -125,6 +125,7 @@ class AbstractLinkable(object):
         # the main thread's hub, the two worker threads would have a dependency on it, meaning that
         # if the main event loop is blocked, the worker threads might get blocked too.
         self.hub = hub
+        self.hub_none = "_init"
 
     def linkcount(self):
         # For testing: how many objects are linked to this one?
@@ -188,6 +189,7 @@ class AbstractLinkable(object):
                 # back, holding GIL
                 if self.hub is my_hub:
                     self.hub = None
+                    self.hub_none = "_capture_hub1 %s" % _get_thread_ident()
                     my_hub = None
                     break
             else:
@@ -201,6 +203,10 @@ class AbstractLinkable(object):
             # we lost the race.
             if self.hub is None:
                 self.hub = current_hub
+                if self.hub is None:
+                    self.hub_none = "_capture_hub2 %s" % _get_thread_ident()
+                else:
+                    self.hub_none = "reset _capture_hub2 %s" % _get_thread_ident()
 
         if self.hub is not None and self.hub.thread_ident != _get_thread_ident():
             raise InvalidThreadUseError(
@@ -439,7 +445,13 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
-            self._switch_to_hub(self.hub)
+            the_hub = self.hub
+            if the_hub is None:
+                the_hub = get_hub()
+                msg = f"HUB IS NONE Send to infrateam: {self.hub_none} {_get_thread_ident()} {the_hub=}"
+                from comet.logging import Logger
+                Logger("GEVENT_RACE_LOG").warning(msg)
+            self._switch_to_hub(the_hub)
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None
         finally:
@@ -534,6 +546,7 @@ class AbstractLinkable(object):
         previous hub and drops any existing notifier.
         """
         self.hub = None
+        self.hub_none = "_at_fork_reinit %s" % _get_thread_ident()
         self._notifier = None
 
 def _init():
