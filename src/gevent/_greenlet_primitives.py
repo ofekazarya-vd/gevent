@@ -62,7 +62,41 @@ class SwitchOutGreenletWithLoop(TrackedRawGreenlet):
         switch_out = getattr(getcurrent(), 'switch_out', None) # pylint:disable=undefined-variable
         if switch_out is not None:
             switch_out()
-        return _greenlet_switch(self) # pylint:disable=undefined-variable
+
+        from gevent import Timeout
+        try:
+            with Timeout(300):
+                return _greenlet_switch(self) # pylint:disable=undefined-variable
+        except Timeout:
+            from greenlet import getcurrent as get_current_greenlet
+            import threading
+
+            current = get_current_greenlet()
+            current_thread_ident = threading.current_thread().ident
+
+            # More diagnostic information
+            target_dead = getattr(self, 'dead', False)
+            target_state = 'dead' if target_dead else 'alive'
+            msg = (
+                f"HUB is stuck: "
+                f"target={self} (state={target_state}) "
+                f"current={current} thread={current_thread_ident}"
+            )
+
+            from comet.logging import Logger
+            Logger("GEVENT_RACE_LOG").warning(msg)
+
+            from gevent._hub_local import get_hub_noargs as get_hub
+            the_hub = get_hub()
+            Logger("GEVENT_RACE_LOG").warning(f"New hub {the_hub=}")
+            try:
+                with Timeout(300):
+                    result = the_hub.switch()
+                    Logger("GEVENT_RACE_LOG").warning(f"New hub switch succeeded, returning {result}")
+                    return result
+            except Timeout:
+                Logger("GEVENT_RACE_LOG").warning("New hub failed")
+                raise
 
     def switch_out(self):
         raise BlockingSwitchOutError('Impossible to call blocking function in the event loop callback')
