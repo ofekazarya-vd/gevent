@@ -9,7 +9,6 @@
 ###
 from __future__ import print_function, absolute_import, division
 import os
-from loguru import logger
 
 __all__ = [
     'Semaphore',
@@ -212,9 +211,14 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         elif self._multithreaded != self._get_thread_ident():
             self._multithreaded = _MULTI
 
-        if os.getenv("GEVENT_LOG_FOLDER"):
-            logger.info("_bounded_sem_acquire1 id=%d thread=%s counter=%d initial=%d _multithreaded=%s _multithreaded is _UNSET=%s _multithreaded is _MULTI=%s" % (
-                id(self), self._get_thread_ident(), self.counter, self._initial_value, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI))
+        logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+        threadident = self._get_thread_ident()
+        logfile = os.path.join(logfolder, str(threadident))
+        if logfolder:
+            with open(logfile, "at") as f:
+                f.write("a1 id=%d t=%s c=%d m=%s iu=%s im=%s\n" % (
+                    id(self), threadident, self.counter, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI))
+
 
         # We conceptually now belong to the hub of the thread that
         # called this, whether or not we have to block. Note that we
@@ -232,22 +236,25 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
             if not self.counter and blocking:
                 # We would need to block. So coordinate with the main hub.
                 x = self.__acquire_from_other_thread(invalid_thread_use, blocking, timeout)
-                if os.getenv("GEVENT_LOG_FOLDER"):
-                    logger.info("_bounded_sem_acquire2 id=%d thread=%s counter=%d initial=%d x=%s" % (
-                        id(self), self._get_thread_ident(), self.counter, self._initial_value, x))
+                if logfolder:
+                    with open(logfile, "at") as f:
+                        f.write("a2 id=%d thread=%s counter=%d x=%s\n" % (
+                            id(self), threadident, self.counter, x))
                 return x
 
         if self.counter > 0:
             self.counter -= 1
-            if os.getenv("GEVENT_LOG_FOLDER"):
-                logger.info("_bounded_sem_acquire3 id=%d thread=%s counter=%d initial=%d x=True" % (
-                    id(self), self._get_thread_ident(), self.counter, self._initial_value))
+            if logfolder:
+                with open(logfile, "at") as f:
+                    f.write("a3 id=%d thread=%s counter=%d x=True\n" % (
+                        id(self), threadident, self.counter))
             return True
 
         if not blocking:
-            if os.getenv("GEVENT_LOG_FOLDER"):
-                logger.info("_bounded_sem_acquire4 id=%d thread=%s counter=%d initial=%d x=False" % (
-                    id(self), self._get_thread_ident(), self.counter, self._initial_value))
+            if logfolder:
+                with open(logfile, "at") as f:
+                    f.write("a4 id=%d thread=%s counter=%d x=False\n" % (
+                        id(self), threadident, self.counter))
             return False
 
         if self._multithreaded is not _MULTI and self.hub is None: # pylint:disable=access-member-before-definition
@@ -262,9 +269,10 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
                 blocking,
                 timeout
             )
-            if os.getenv("GEVENT_LOG_FOLDER"):
-                logger.info("_bounded_sem_acquire5 id=%d thread=%s counter=%d initial=%d x=%s" % (
-                    id(self), self._get_thread_ident(), self.counter, self._initial_value, x))
+            if logfolder:
+                with open(logfile, "at") as f:
+                    f.write("a5 id=%d thread=%s counter=%d x=%s\n" % (
+                        id(self), threadident, self.counter, x))
             return x
 
         # self._wait may drop both the GIL and the _lock_lock.
@@ -285,26 +293,29 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
                     (self.hub, get_hub_if_exists(), self._getcurrent(), "LoopExit"),
                     blocking,
                     timeout)
-                if os.getenv("GEVENT_LOG_FOLDER"):
-                    logger.info("_bounded_sem_acquire6 id=%d thread=%s counter=%d initial=%d x=%s" % (
-                        id(self), self._get_thread_ident(), self.counter, self._initial_value, x))
+                if logfolder:
+                    with open(logfile, "at") as f:
+                        f.write("a6 id=%d thread=%s counter=%d x=%s\n" % (
+                            id(self), threadident, self.counter, x))
                 return x
 
         if not success:
             assert timeout is not None
             # Our timer expired.
-            if os.getenv("GEVENT_LOG_FOLDER"):
-                logger.info("_bounded_sem_acquire7 id=%d thread=%s counter=%d initial=%d x=False" % (
-                    id(self), self._get_thread_ident(), self.counter, self._initial_value))
+            if logfolder:
+                with open(logfile, "at") as f:
+                    f.write("a7 id=%d thread=%s counter=%d x=False\n" % (
+                        id(self), threadident, self.counter))
             return False
 
         # Neither our timer or another one expired, so we blocked until
         # awoke. Therefore, the counter is ours
         assert self.counter > 0, (self.counter, blocking, timeout, success,)
         self.counter -= 1
-        if os.getenv("GEVENT_LOG_FOLDER"):
-            logger.info("_bounded_sem_acquire8 id=%d thread=%s counter=%d initial=%d x=True" % (
-                id(self), self._get_thread_ident(), self.counter, self._initial_value))
+        if logfolder:
+            with open(logfile, "at") as f:
+                f.write("a8 id=%d thread=%s counter=%d x=True\n" % (
+                    id(self), threadident, self.counter))
         return True
 
     _py3k_acquire = acquire # PyPy needs this; it must be static for Cython
@@ -526,11 +537,20 @@ class BoundedSemaphore(Semaphore):
         Like :meth:`Semaphore.release`, but raises :class:`ValueError`
         if the semaphore is being over-released.
         """
-        if os.getenv("GEVENT_LOG_FOLDER"):
-            logger.info("_bounded_sem_release id=%d thread=%s counter=%d initial=%d _multithreaded=%s _multithreaded is _UNSET=%s _multithreaded is _MULTI=%s" % (
-                id(self), self._get_thread_ident(), self.counter, self._initial_value, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI))
+        logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+        if logfolder:
+            threadident = self._get_thread_ident()
+            logfile = os.path.join(logfolder, str(threadident))
+            with open(logfile, "at") as f:
+                f.write("r9 id=%d t=%s c=%d i=%d mt=%s iu=%s im=%s\n" % (
+                    id(self), threadident, self.counter, self._initial_value, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI))
 
         if self.counter >= self._initial_value:
+            threadident = self._get_thread_ident()
+            logfile = os.path.join(logfolder, str(threadident))
+            with open(logfile, "at") as f:
+                f.write("r10 id=%d t=%s c=%d i=%d mt=%s iu=%s im=%s\n" % (
+                    id(self), threadident, self.counter, self._initial_value, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI))
             raise self._OVER_RELEASE_ERROR("Semaphore released too many times")
         counter = Semaphore.release(self)
         # When we are absolutely certain that no one holds this semaphore,
