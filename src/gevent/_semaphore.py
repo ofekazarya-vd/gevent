@@ -8,6 +8,8 @@
 # handled in ``gevent.lock``, do not apply to them.
 ###
 from __future__ import print_function, absolute_import, division
+import os
+from loguru import logger
 
 __all__ = [
     'Semaphore',
@@ -210,6 +212,10 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         elif self._multithreaded != self._get_thread_ident():
             self._multithreaded = _MULTI
 
+        if os.getenv("GEVENT_LOG_FOLDER"):
+            logger.info("_bounded_sem_acquire1 id=%d thread=%s counter=%d initial=%d _multithreaded=%s _multithreaded is _UNSET=%s _multithreaded is _MULTI=%s" % (
+                id(self), self._get_thread_ident(), self.counter, self._initial_value, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI))
+
         # We conceptually now belong to the hub of the thread that
         # called this, whether or not we have to block. Note that we
         # cannot force it to be created yet, because Semaphore is used
@@ -225,13 +231,23 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
             e = None
             if not self.counter and blocking:
                 # We would need to block. So coordinate with the main hub.
-                return self.__acquire_from_other_thread(invalid_thread_use, blocking, timeout)
+                x = self.__acquire_from_other_thread(invalid_thread_use, blocking, timeout)
+                if os.getenv("GEVENT_LOG_FOLDER"):
+                    logger.info("_bounded_sem_acquire2 id=%d thread=%s counter=%d initial=%d x=%s" % (
+                        id(self), self._get_thread_ident(), self.counter, self._initial_value, x))
+                return x
 
         if self.counter > 0:
             self.counter -= 1
+            if os.getenv("GEVENT_LOG_FOLDER"):
+                logger.info("_bounded_sem_acquire3 id=%d thread=%s counter=%d initial=%d x=True" % (
+                    id(self), self._get_thread_ident(), self.counter, self._initial_value))
             return True
 
         if not blocking:
+            if os.getenv("GEVENT_LOG_FOLDER"):
+                logger.info("_bounded_sem_acquire4 id=%d thread=%s counter=%d initial=%d x=False" % (
+                    id(self), self._get_thread_ident(), self.counter, self._initial_value))
             return False
 
         if self._multithreaded is not _MULTI and self.hub is None: # pylint:disable=access-member-before-definition
@@ -241,11 +257,15 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
             # Someone else is holding us. There's not a hub here,
             # nor is there a hub in that thread. We'll need to use regular locks.
             # This will be unfair to yet a third thread that tries to use us with greenlets.
-            return self.__acquire_from_other_thread(
+            x = self.__acquire_from_other_thread(
                 (None, None, self._getcurrent(), "NoHubs"),
                 blocking,
                 timeout
             )
+            if os.getenv("GEVENT_LOG_FOLDER"):
+                logger.info("_bounded_sem_acquire5 id=%d thread=%s counter=%d initial=%d x=%s" % (
+                    id(self), self._get_thread_ident(), self.counter, self._initial_value, x))
+            return x
 
         # self._wait may drop both the GIL and the _lock_lock.
         # By the time we regain control, both have been reacquired.
@@ -261,20 +281,30 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
                 if len(args) == 3 and args[1].main_hub:
                     # The main hub, meaning the main thread. We probably can do nothing with this.
                     raise
-                return self.__acquire_from_other_thread(
+                x = self.__acquire_from_other_thread(
                     (self.hub, get_hub_if_exists(), self._getcurrent(), "LoopExit"),
                     blocking,
                     timeout)
+                if os.getenv("GEVENT_LOG_FOLDER"):
+                    logger.info("_bounded_sem_acquire6 id=%d thread=%s counter=%d initial=%d x=%s" % (
+                        id(self), self._get_thread_ident(), self.counter, self._initial_value, x))
+                return x
 
         if not success:
             assert timeout is not None
             # Our timer expired.
+            if os.getenv("GEVENT_LOG_FOLDER"):
+                logger.info("_bounded_sem_acquire7 id=%d thread=%s counter=%d initial=%d x=False" % (
+                    id(self), self._get_thread_ident(), self.counter, self._initial_value))
             return False
 
         # Neither our timer or another one expired, so we blocked until
         # awoke. Therefore, the counter is ours
         assert self.counter > 0, (self.counter, blocking, timeout, success,)
         self.counter -= 1
+        if os.getenv("GEVENT_LOG_FOLDER"):
+            logger.info("_bounded_sem_acquire8 id=%d thread=%s counter=%d initial=%d x=True" % (
+                id(self), self._get_thread_ident(), self.counter, self._initial_value))
         return True
 
     _py3k_acquire = acquire # PyPy needs this; it must be static for Cython
@@ -496,6 +526,10 @@ class BoundedSemaphore(Semaphore):
         Like :meth:`Semaphore.release`, but raises :class:`ValueError`
         if the semaphore is being over-released.
         """
+        if os.getenv("GEVENT_LOG_FOLDER"):
+            logger.info("_bounded_sem_release id=%d thread=%s counter=%d initial=%d _multithreaded=%s _multithreaded is _UNSET=%s _multithreaded is _MULTI=%s" % (
+                id(self), self._get_thread_ident(), self.counter, self._initial_value, self._multithreaded, self._multithreaded is _UNSET, self._multithreaded is _MULTI))
+
         if self.counter >= self._initial_value:
             raise self._OVER_RELEASE_ERROR("Semaphore released too many times")
         counter = Semaphore.release(self)
