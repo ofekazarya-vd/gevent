@@ -32,6 +32,7 @@ from gevent._hub_local import get_hub_if_exists
 from gevent._hub_local import get_hub
 from gevent.hub import spawn_raw
 from greenlet import getcurrent
+import time
 
 class _LockReleaseLink(object):
     __slots__ = (
@@ -218,8 +219,8 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         logfile = os.path.join(logfolder, str(threadident))
         if logfolder:
             with open(logfile, "at") as f:
-                f.write("a1 id=%d t=%s c=%d\n" % (
-                    id(self), greenletident, self.counter))
+                f.write("a1 time=%d id=%d t=%s c=%d\n" % (
+                    time.time(), id(self), greenletident, self.counter))
 
 
         # We conceptually now belong to the hub of the thread that
@@ -240,23 +241,23 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
                 x = self.__acquire_from_other_thread(invalid_thread_use, blocking, timeout)
                 if logfolder:
                     with open(logfile, "at") as f:
-                        f.write("a2 id=%d thread=%s counter=%d x=%s\n" % (
-                            id(self), greenletident, self.counter, x))
+                        f.write("a2 time=%d id=%d t=%s c=%d x=%s\n" % (
+                            time.time(), id(self), greenletident, self.counter, x))
                 return x
 
         if self.counter > 0:
             self.counter -= 1
             if logfolder:
                 with open(logfile, "at") as f:
-                    f.write("a3 id=%d thread=%s counter=%d x=True\n" % (
-                        id(self), greenletident, self.counter))
+                    f.write("a3 time=%d id=%d t=%s c=%d x=True\n" % (
+                        time.time(), id(self), greenletident, self.counter))
             return True
 
         if not blocking:
             if logfolder:
                 with open(logfile, "at") as f:
-                    f.write("a4 id=%d thread=%s counter=%d x=False\n" % (
-                        id(self), greenletident, self.counter))
+                    f.write("a4 time=%d id=%d t=%s c=%d x=False\n" % (
+                        time.time(), id(self), greenletident, self.counter))
             return False
 
         if self._multithreaded is not _MULTI and self.hub is None: # pylint:disable=access-member-before-definition
@@ -273,8 +274,8 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
             )
             if logfolder:
                 with open(logfile, "at") as f:
-                    f.write("a5 id=%d thread=%s counter=%d x=%s\n" % (
-                        id(self), greenletident, self.counter, x))
+                    f.write("a5 time=%d id=%d t=%s c=%d x=%s\n" % (
+                        time.time(), id(self), greenletident, self.counter, x))
             return x
 
         # self._wait may drop both the GIL and the _lock_lock.
@@ -297,8 +298,8 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
                     timeout)
                 if logfolder:
                     with open(logfile, "at") as f:
-                        f.write("a6 id=%d thread=%s counter=%d x=%s\n" % (
-                            id(self), greenletident, self.counter, x))
+                        f.write("a6 time=%d id=%d t=%s c=%d x=%s\n" % (
+                            time.time(), id(self), greenletident, self.counter, x))
                 return x
 
         if not success:
@@ -306,8 +307,8 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
             # Our timer expired.
             if logfolder:
                 with open(logfile, "at") as f:
-                    f.write("a7 id=%d thread=%s counter=%d x=False\n" % (
-                        id(self), greenletident, self.counter))
+                    f.write("a7 time=%d id=%d t=%s c=%d x=False\n" % (
+                        time.time(), id(self), greenletident, self.counter))
             return False
 
         # Neither our timer or another one expired, so we blocked until
@@ -316,8 +317,8 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         self.counter -= 1
         if logfolder:
             with open(logfile, "at") as f:
-                f.write("a8 id=%d thread=%s counter=%d x=True\n" % (
-                    id(self), greenletident, self.counter))
+                f.write("a8 time=%d id=%d t=%s c=%d x=True\n" % (
+                    time.time(), id(self), greenletident, self.counter))
         return True
 
     _py3k_acquire = acquire # PyPy needs this; it must be static for Cython
@@ -545,16 +546,16 @@ class BoundedSemaphore(Semaphore):
             greenletident = id(getcurrent())
             logfile = os.path.join(logfolder, str(threadident))
             with open(logfile, "at") as f:
-                f.write("r9 id=%d t=%s c=%d i=%d\n" % (
-                    id(self), greenletident, self.counter, self._initial_value))
+                f.write("r9 time=%d id=%d t=%s c=%d i=%d\n" % (
+                    time.time(), id(self), greenletident, self.counter, self._initial_value))
 
         if self.counter >= self._initial_value:
             threadident = self._get_thread_ident()
             greenletident = id(getcurrent())
             logfile = os.path.join(logfolder, str(threadident))
             with open(logfile, "at") as f:
-                f.write("r10 id=%d t=%s c=%d i=%d\n" % (
-                    id(self), greenletident, self.counter, self._initial_value))
+                f.write("r10 time=%d id=%d t=%s c=%d i=%d\n" % (
+                    time.time(), id(self), greenletident, self.counter, self._initial_value))
             raise self._OVER_RELEASE_ERROR("Semaphore released too many times")
         counter = Semaphore.release(self)
         # When we are absolutely certain that no one holds this semaphore,
