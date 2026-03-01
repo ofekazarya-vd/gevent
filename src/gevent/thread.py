@@ -63,7 +63,9 @@ from gevent.greenlet import Greenlet
 from gevent.lock import BoundedSemaphore
 from gevent.local import local as _local
 from gevent.exceptions import LoopExit
+from gevent.timeout import Timeout
 
+_real_get_thread_ident = __import__('_thread').get_ident
 
 if hasattr(__thread__, 'RLock'):
     # Added in Python 3.4, backported to PyPy 2.7-7.0
@@ -308,6 +310,24 @@ class LockType(BoundedSemaphore):
             if blocking: # pragma: no cover
                 raise
             acquired = False
+        except Timeout as t:
+            import os
+            logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+            if logfolder:
+                import traceback
+                import time
+                greenletident = id(getcurrent())
+                threadident = _real_get_thread_ident()
+                logfile = os.path.join(logfolder, str(threadident))
+                with open(logfile, "at") as f:
+                    f.write("TIMEOUT_ACQUIRE time=%d timeout=%s blocking=%s s=%s t=%d timeout_id=%d stack:\n%s\n" % (
+                        time.time(), timeout, blocking, t.seconds, greenletident, id(t),
+                        "".join(traceback.format_stack())))
+
+            ## NOT A REAL SOLUTION BECAUSE OF TIMING ISSUE, Just testing some stuff while I'm at it.
+            acquired = BoundedSemaphore.acquire(self, blocking, timeout)
+            raise
+
 
         if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
             # Run other callbacks. This makes spin locks works.
