@@ -12,6 +12,7 @@ objects.) `gevent.greenlet.Greenlet` implements this protocol but
 does not extend this object (TODO: It probably should.)
 """
 import sys
+import os
 from gc import get_objects
 
 from greenlet import greenlet
@@ -24,6 +25,8 @@ from gevent._hub_local import get_hub_if_exists
 from gevent.exceptions import InvalidSwitchError
 from gevent.exceptions import InvalidThreadUseError
 from gevent.timeout import Timeout
+
+import time
 
 locals()['getcurrent'] = __import__('greenlet').getcurrent
 locals()['greenlet_init'] = lambda: None
@@ -191,6 +194,14 @@ class AbstractLinkable(object):
                 # back, holding GIL
                 if self.hub is my_hub:
                     self.hub = None
+                    logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+                    if logfolder:
+                        threadident = self._get_thread_ident()
+                        greenletident = id(self._getcurrent())
+                        logfile = os.path.join(logfolder, str(threadident))
+                        with open(logfile, "at") as f:
+                            f.write("h1 time=%d id=%d hid=%d hn=%s t=%s\n" % (
+                                time.time(), id(self), id(self.hub), self.hub is None, greenletident))
                     my_hub = None
                     break
             else:
@@ -204,6 +215,14 @@ class AbstractLinkable(object):
             # we lost the race.
             if self.hub is None:
                 self.hub = current_hub
+                logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+                if logfolder:
+                    threadident = self._get_thread_ident()
+                    greenletident = id(self._getcurrent())
+                    logfile = os.path.join(logfolder, str(threadident))
+                    with open(logfile, "at") as f:
+                        f.write("h2 time=%d id=%d hid=%d hn=%s t=%s\n" % (
+                            time.time(), id(self), id(self.hub), self.hub is None, greenletident))
 
         if self.hub is not None and self.hub.thread_ident != _get_thread_ident():
             raise InvalidThreadUseError(
@@ -447,7 +466,18 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
-            self._switch_to_hub(self.hub)
+            if self.hub is None:
+                from comet.logging import Logger
+                Logger("GEVENT_RACE_LOG").warning("HUB IS NONE")
+                logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+                if logfolder:
+                    threadident = self._get_thread_ident()
+                    greenletident = id(self._getcurrent())
+                    logfile = os.path.join(logfolder, str(threadident))
+                    with open(logfile, "at") as f:
+                        f.write("h3 time=%d id=%d hid=%d hn=%s t=%s\n" % (
+                            time.time(), id(self), id(self.hub), self.hub is None, greenletident))
+            self._switch_to_hub(self.hub or get_hub())
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None
         finally:
@@ -542,6 +572,14 @@ class AbstractLinkable(object):
         previous hub and drops any existing notifier.
         """
         self.hub = None
+        logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+        if logfolder:
+            threadident = self._get_thread_ident()
+            greenletident = id(self._getcurrent())
+            logfile = os.path.join(logfolder, str(threadident))
+            with open(logfile, "at") as f:
+                f.write("h4 time=%d id=%d hid=%d hn=%s t=%s\n" % (
+                    time.time(), id(self), id(self.hub), self.hub is None, greenletident))
         self._notifier = None
 
 def _init():

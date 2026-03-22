@@ -63,7 +63,9 @@ from gevent.greenlet import Greenlet
 from gevent.lock import BoundedSemaphore
 from gevent.local import local as _local
 from gevent.exceptions import LoopExit
+from gevent.timeout import Timeout
 
+_real_get_thread_ident = __import__('_thread').get_ident
 
 if hasattr(__thread__, 'RLock'):
     # Added in Python 3.4, backported to PyPy 2.7-7.0
@@ -308,8 +310,24 @@ class LockType(BoundedSemaphore):
             if blocking: # pragma: no cover
                 raise
             acquired = False
+        except Timeout as t:
+            import os
+            logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+            if logfolder:
+                import traceback
+                import time
+                greenletident = id(getcurrent())
+                threadident = _real_get_thread_ident()
+                logfile = os.path.join(logfolder, str(threadident))
+                with open(logfile, "at") as f:
+                    f.write("TIMEOUT_ACQUIRE time=%d timeout=%s blocking=%s s=%s t=%d timeout_id=%d stack:\n%s\n" % (
+                        time.time(), timeout, blocking, t.seconds, greenletident, id(t),
+                        "".join(traceback.format_stack())))
+            raise
 
-        if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
+        _current = getcurrent()
+        _ghub = get_hub_if_exists()
+        if not acquired and not blocking and _current is not _ghub:
             # Run other callbacks. This makes spin locks works.
             # We can't do this if we're in the hub, which we could easily be:
             # printing the repr of a thread checks its tstate_lock, and sometimes we
@@ -319,6 +337,17 @@ class LockType(BoundedSemaphore):
             # By using sleep() instead of self.wait(0), we don't force a trip
             # around the event loop *unless* we've been running callbacks for
             # longer than our switch interval.
+            import os
+            logfolder = os.getenv("GEVENT_LOG_FOLDER") or ""
+            if logfolder:
+                import traceback
+                import time
+                greenletident = id(getcurrent())
+                threadident = _real_get_thread_ident()
+                logfile = os.path.join(logfolder, str(threadident))
+                with open(logfile, "at") as f:
+                    f.write("SLEEP_CALLBACK_FRAME time=%d  t=%d _cid=%d _ghid=%d _c=%s, _gh=%s" % (
+                        time.time(), greenletident, id(_current), id(_ghub), _current, _ghub))
             sleep()
         return acquired
 
