@@ -447,7 +447,10 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
-            self._switch_to_hub(self.hub)
+            if self.hub is None:
+                from comet.logging import Logger
+                Logger("GEVENT_RACE_LOG").warning("HUB IS NONE")
+            self._switch_to_hub(self.hub or get_hub())
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None
         finally:
