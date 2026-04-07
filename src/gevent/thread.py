@@ -319,7 +319,7 @@ class LockType(BoundedSemaphore):
             # By using sleep() instead of self.wait(0), we don't force a trip
             # around the event loop *unless* we've been running callbacks for
             # longer than our switch interval.
-            sleep(0.001)
+            self.wait(0)
         return acquired
 
     # Should we implement _is_owned, at least for Python 2? See notes in
