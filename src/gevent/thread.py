@@ -272,55 +272,51 @@ class LockType(BoundedSemaphore):
            This matches the Lock API of Python 3
         """
         super().__init__()
+        self._owner_greenlet = None
 
     @classmethod
     def __init_subclass__(cls):
         raise TypeError
 
     def acquire(self, blocking=True, timeout=-1):
-        # This is the Python 3 signature.
-        # On Python 2, Lock.acquire has the signature `Lock.acquire([wait])`
-        # where `wait` is a boolean that cannot be passed by name, only position.
-        # so we're fine to use the Python 3 signature.
-
-        # Transform the default -1 argument into the None that our
-        # semaphore implementation expects, and raise the same error
-        # the stdlib implementation does.
         if timeout == -1:
             timeout = None
         if not blocking and timeout is not None:
             raise ValueError("can't specify a timeout for a non-blocking call")
         if timeout is not None:
             if timeout < 0:
-                # in C: if(timeout < 0 && timeout != -1)
                 raise ValueError("timeout value must be strictly positive")
             if timeout > self._TIMEOUT_MAX:
                 raise OverflowError('timeout value is too large')
 
-
         try:
             acquired = BoundedSemaphore.acquire(self, blocking, timeout)
         except LoopExit:
-            # Raised when the semaphore was not trivially ours, and we needed
-            # to block. Some other thread presumably owns the semaphore, and there are no greenlets
-            # running in this thread to switch to. So the best we can do is
-            # release the GIL and try again later.
             if blocking: # pragma: no cover
                 raise
             acquired = False
 
-        if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
-            # Run other callbacks. This makes spin locks works.
-            # We can't do this if we're in the hub, which we could easily be:
-            # printing the repr of a thread checks its tstate_lock, and sometimes we
-            # print reprs in the hub.
-            # See https://github.com/gevent/gevent/issues/1464
+        if acquired:
+            self._owner_greenlet = getcurrent()
 
-            # By using sleep() instead of self.wait(0), we don't force a trip
-            # around the event loop *unless* we've been running callbacks for
-            # longer than our switch interval.
-            sleep()
+        if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
+            # Yield to let the lock holder run (spin-lock support,
+            # see https://github.com/gevent/gevent/issues/1464).
+            # But skip the yield when the CURRENT greenlet already owns this
+            # lock (e.g. Condition._is_owned() probe) - yielding there would
+            # release the CPU while still holding other locks, enabling
+            # deadlocks in ThreadPoolExecutor._adjust_thread_count().
+            if self._owner_greenlet is not getcurrent():
+                sleep()
         return acquired
+
+    def release(self):
+        self._owner_greenlet = None
+        return BoundedSemaphore.release(self)
+
+    def _at_fork_reinit(self):
+        self._owner_greenlet = None
+        super()._at_fork_reinit()
 
     # Should we implement _is_owned, at least for Python 2? See notes in
     # monkey.py's patch_existing_locks.
