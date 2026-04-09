@@ -311,6 +311,16 @@ class LockType(BoundedSemaphore):
                 if blocking:
                     raise
                 acquired = False
+            except BaseException as _exc:
+                try:
+                    from gevent.hub import _gevent_debug_log
+                    _gevent_debug_log(
+                        "LOCKTYPE.ACQUIRE EXCEPTION lock=0x%x blocking=%s timeout=%s exc=%r"
+                        % (id(self), blocking, timeout, _exc)
+                    )
+                except Exception:
+                    pass
+                raise
         finally:
             if _backup is not None:
                 try:

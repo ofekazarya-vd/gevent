@@ -200,9 +200,82 @@ def _dump_stuck_acquire(lock_obj, hub, entry_time):
                 for subline in line.splitlines():
                     lines.append("    " + subline)
 
+        try:
+            if hasattr(hub, 'gr_frame') and hub.gr_frame is not None:
+                lines.append("\n  Hub greenlet frame:")
+                for line in _tb.format_stack(hub.gr_frame):
+                    for subline in line.splitlines():
+                        lines.append("    HUB> " + subline)
+            else:
+                lines.append("  Hub greenlet: no gr_frame (running or dead)")
+        except Exception as e:
+            lines.append("  Hub frame error: %s" % e)
+
+        try:
+            cbs = hub.loop._callbacks
+            lines.append("  Callback queue: %d entries" % len(cbs))
+        except Exception:
+            pass
+
         lines.append("\n!!!! END GEVENT ACQUIRE WATCHDOG DUMP !!!!\n")
     except Exception as e:
         lines.append("GEVENT WATCHDOG: error during acquire dump: %s" % e)
+
+    _gevent_debug_log("\n".join(lines))
+
+
+_SLEEP_WATCHDOG_TIMEOUT = 5.0
+
+
+def _dump_stuck_sleep(waiter_obj, hub, wakeup_obj, context):
+    """Watchdog: fires when sleep() hasn't returned within the timeout."""
+    import time
+    import traceback as _tb
+    lines = []
+    try:
+        lines.append(
+            "\n!!!! GEVENT SLEEP WATCHDOG: sleep() stuck >%.0fs (%s) !!!!"
+            % (_SLEEP_WATCHDOG_TIMEOUT, context)
+        )
+
+        if waiter_obj is not None:
+            lines.append("  waiter: 0x%x" % id(waiter_obj))
+            glet = waiter_obj.greenlet
+            lines.append("  waiter.greenlet: %s (dead=%s)" % (
+                glet, getattr(glet, 'dead', '?') if glet else 'N/A'
+            ))
+            lines.append("  waiter._exception: %r" % (waiter_obj._exception,))
+            if glet is not None and hasattr(glet, 'gr_frame') and glet.gr_frame is not None:
+                lines.append("  STUCK greenlet frame:")
+                for line in _tb.format_stack(glet.gr_frame):
+                    for subline in line.splitlines():
+                        lines.append("    STUCK> " + subline)
+
+        lines.append("  wakeup: %r (pending=%s)" % (
+            wakeup_obj, getattr(wakeup_obj, 'pending', '?')
+        ))
+
+        if hasattr(hub, 'gr_frame') and hub.gr_frame is not None:
+            lines.append("\n  Hub greenlet frame:")
+            for line in _tb.format_stack(hub.gr_frame):
+                for subline in line.splitlines():
+                    lines.append("    HUB> " + subline)
+        else:
+            lines.append("  Hub greenlet: no gr_frame (running or dead)")
+
+        try:
+            cbs = hub.loop._callbacks
+            lines.append("\n  Callback queue: %d entries" % len(cbs))
+            for i, c in enumerate(list(cbs)[:10]):
+                lines.append("    [%d] cb=%s args=%s stopped=%s" % (
+                    i, c.callback, c.args, getattr(c, 'stopped', '?')
+                ))
+        except Exception as e:
+            lines.append("  Callback queue error: %s" % e)
+
+        lines.append("\n!!!! END SLEEP WATCHDOG DUMP !!!!\n")
+    except Exception as e:
+        lines.append("SLEEP WATCHDOG: error during dump: %s" % e)
 
     _gevent_debug_log("\n".join(lines))
 
@@ -236,13 +309,16 @@ def sleep(seconds=0, ref=True):
     loop = hub.loop
     if seconds <= 0:
         waiter = Waiter(hub)
-        loop.run_callback(waiter.switch, None)
-        waiter.get()
+        cb = loop.run_callback(waiter.switch, None)
+        _wd = loop.timer(_SLEEP_WATCHDOG_TIMEOUT, ref=False)
+        _wd.start(_dump_stuck_sleep, waiter, hub, cb, 'callback')
+        try:
+            waiter.get()
+        finally:
+            _wd.stop()
+            _wd.close()
     else:
         with loop.timer(seconds, ref=ref) as t:
-            # Sleeping is expected to be an "absolute" measure with
-            # respect to time.time(), not a relative measure, so it's
-            # important to update the loop's notion of now before we start
             loop.update_now()
             hub.wait(t)
 
