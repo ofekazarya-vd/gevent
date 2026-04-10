@@ -271,6 +271,17 @@ class AbstractLinkable(object):
                     except greenlet_error:
                         # couldn't switch to a greenlet, we must be
                         # running in a different thread. back on the list it goes for next time.
+                        try:
+                            from gevent.hub import _gevent_debug_log
+                            _glet = getattr(link, '__self__', None)
+                            _gevent_debug_log(
+                                "NOTIFY_LINK greenlet.error: self=0x%x (%s) link=%r greenlet=%r "
+                                "dead=%s" % (
+                                    id(self), type(self).__name__, link, _glet,
+                                    getattr(_glet, 'dead', '?'))
+                            )
+                        except Exception:
+                            pass
                         unswitched.append(link)
                     finally:
                         self._acquire_lock_for_switch_in()
@@ -450,11 +461,28 @@ class AbstractLinkable(object):
         if obj is None:
             return
 
+        _in_links = obj in self._links
         self.unlink(obj)
+
+        _in_arrived = False
         if self._notifier is not None and self._notifier.args:
             try:
                 self._notifier.args[0].remove(obj)
+                _in_arrived = True
             except ValueError:
+                pass
+
+        if not _in_links and not _in_arrived:
+            try:
+                from gevent.hub import _gevent_debug_log
+                _glet = getattr(obj, '__self__', None)
+                _gevent_debug_log(
+                    "QUIET_UNLINK_ALL ANOMALY: link not found in _links or arrived_while_waiting! "
+                    "self=0x%x (%s) obj=%r greenlet=%r notifier=%r _links=%d"
+                    % (id(self), type(self).__name__, obj, _glet,
+                       self._notifier, len(self._links))
+                )
+            except Exception:
                 pass
 
     def __wait_to_be_notified(self, rawlink): # pylint:disable=too-many-branches
