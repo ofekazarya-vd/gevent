@@ -139,7 +139,6 @@ def _gevent_debug_log(msg):
         pass
     try:
         import os
-        os.makedirs(_GEVENT_LOG_DIR, exist_ok=True)
         _tid = __import__('_thread').get_ident()
         _lf = os.path.join(_GEVENT_LOG_DIR, str(_tid))
         with open(_lf, "at") as _f:
