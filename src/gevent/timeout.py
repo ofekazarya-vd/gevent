@@ -233,15 +233,6 @@ class Timeout(BaseException):
             # "fake" timeout (never expires)
             return
 
-        try:
-            from gevent.hub import _gevent_debug_log
-            _gevent_debug_log(
-                "TIMEOUT.START id=0x%x seconds=%s greenlet=%r exception=%r"
-                % (id(self), self.seconds, getcurrent(), self.exception)
-            )
-        except Exception:
-            pass
-
         if self.exception is None or self.exception is False or isinstance(self.exception, string_types):
             # timeout that raises self
             throws = self
@@ -377,7 +368,7 @@ class Timeout(BaseException):
                 from gevent.hub import _gevent_debug_log
                 _gevent_debug_log(
                     "TIMEOUT.FIRED id=0x%x seconds=%s suppressed=%s exc_type=%r"
-                    % (id(self), self.seconds, self.exception is False,typ)
+                    % (id(self), self.seconds, self.exception is False, typ)
                 )
             except Exception:
                 pass
