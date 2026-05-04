@@ -364,7 +364,7 @@ class Timeout(BaseException):
         """
         fired = (value is self) or (self.exception is not None and value is self.exception)
         if fired:
-            if self.exception is not TimeoutError or self.seconds != 0.1:
+            if not isinstance(self.exception, TimeoutError) or self.seconds != 0.1:
                 try:
                     from gevent.hub import _gevent_debug_log
                     _gevent_debug_log(
