@@ -321,14 +321,6 @@ class Timeout(BaseException):
         Close the timeout and free resources. The timer cannot be started again
         after this method has been used.
         """
-        try:
-            from gevent.hub import _gevent_debug_log
-            _gevent_debug_log(
-                "TIMEOUT.EXIT2 id=0x%x"
-                % (id(self),)
-            )
-        except Exception:
-            pass
         self.timer.stop()
         self.timer.close()
         self.timer = _FakeTimer
@@ -379,14 +371,16 @@ class Timeout(BaseException):
            The underlying native timer is also stopped. This object cannot be
            used again.
         """
-        try:
-            from gevent.hub import _gevent_debug_log
-            _gevent_debug_log(
-                "TIMEOUT.EXIT id=0x%x seconds=%s fired=%s exc_type=%r"
-                % (id(self), self.seconds, value is self, typ)
-            )
-        except Exception:
-            pass
+        fired = (value is self) or (self.exception is not None and value is self.exception)
+        if fired:
+            try:
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "TIMEOUT.FIRED id=0x%x seconds=%s suppressed=%s exc_type=%r"
+                    % (id(self), self.seconds, self.exception is False,typ)
+                )
+            except Exception:
+                pass
         self.close()
         if value is self and self.exception is False:
             return True # Suppress the exception
