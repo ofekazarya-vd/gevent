@@ -364,14 +364,15 @@ class Timeout(BaseException):
         """
         fired = (value is self) or (self.exception is not None and value is self.exception)
         if fired:
-            try:
-                from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "TIMEOUT.FIRED id=0x%x seconds=%s suppressed=%s exc_type=%r"
-                    % (id(self), self.seconds, self.exception is False, typ)
-                )
-            except Exception:
-                pass
+            if self.exception is not TimeoutError or self.seconds != 0.1:
+                try:
+                    from gevent.hub import _gevent_debug_log
+                    _gevent_debug_log(
+                        "TIMEOUT.FIRED id=0x%x seconds=%s suppressed=%s exc_type=%r"
+                        % (id(self), self.seconds, self.exception is False, typ)
+                    )
+                except Exception:
+                    pass
         self.close()
         if value is self and self.exception is False:
             return True # Suppress the exception
