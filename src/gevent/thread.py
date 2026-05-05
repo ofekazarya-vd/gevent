@@ -272,7 +272,7 @@ class LockType(BoundedSemaphore):
            This matches the Lock API of Python 3
         """
         super().__init__()
-        self._owner_greenlet = None
+        self._debug_owner = None
 
     @classmethod
     def __init_subclass__(cls):
@@ -289,37 +289,55 @@ class LockType(BoundedSemaphore):
             if timeout > self._TIMEOUT_MAX:
                 raise OverflowError('timeout value is too large')
 
+        _backup = None
         try:
-            acquired = BoundedSemaphore.acquire(self, blocking, timeout)
-        except LoopExit:
-            if blocking: # pragma: no cover
-                raise
-            acquired = False
+            if blocking:
+                try:
+                    _hub = get_hub_if_exists()
+                    if _hub is not None and _hub.loop is not None:
+                        from gevent.hub import _dump_stuck_acquire, _ACQUIRE_WATCHDOG_TIMEOUT
+                        _backup = _hub.loop.timer(_ACQUIRE_WATCHDOG_TIMEOUT, ref=False)
+                        _backup.start(
+                            _dump_stuck_acquire,
+                            self, _hub,
+                            __import__('time').monotonic()
+                        )
+                except Exception:
+                    _backup = None
+
+            try:
+                acquired = BoundedSemaphore.acquire(self, blocking, timeout)
+            except LoopExit:
+                if blocking:
+                    raise
+                acquired = False
+        finally:
+            if _backup is not None:
+                try:
+                    _backup.stop()
+                    _backup.close()
+                except Exception:
+                    pass
 
         if acquired:
-            self._owner_greenlet = getcurrent()
+            self._debug_owner = (getcurrent(), __import__('_thread').get_ident(), __import__('time').monotonic())
 
         if not acquired and not blocking and getcurrent() is not get_hub_if_exists():
-            # Yield to let the lock holder run (spin-lock support,
-            # see https://github.com/gevent/gevent/issues/1464).
-            # But skip the yield when the CURRENT greenlet already owns this
-            # lock (e.g. Condition._is_owned() probe) - yielding there would
-            # release the CPU while still holding other locks, enabling
-            # deadlocks in ThreadPoolExecutor._adjust_thread_count().
-            if self._owner_greenlet is not getcurrent():
+            # Skip the yield when the current greenlet already owns this lock
+            # (e.g. Condition._is_owned() probe) — yielding there suspends
+            # the greenlet while it holds other locks, causing deadlocks in
+            # ThreadPoolExecutor._adjust_thread_count().
+            if self._debug_owner is None or self._debug_owner[0] is not getcurrent():
                 sleep()
         return acquired
 
     def release(self):
-        self._owner_greenlet = None
+        self._debug_owner = None
         return BoundedSemaphore.release(self)
 
     def _at_fork_reinit(self):
-        self._owner_greenlet = None
+        self._debug_owner = None
         super()._at_fork_reinit()
-
-    # Should we implement _is_owned, at least for Python 2? See notes in
-    # monkey.py's patch_existing_locks.
 
 allocate_lock = lock = LockType
 
