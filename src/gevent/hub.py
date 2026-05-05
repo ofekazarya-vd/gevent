@@ -207,6 +207,79 @@ def _dump_stuck_acquire(lock_obj, hub, entry_time):
     _gevent_debug_log("\n".join(lines))
 
 
+_GREENLET_DUMP_DELAY = 60  # 1 minute - enough for the empty test to finish
+
+
+def _dump_all_greenlets(*_args):
+    import gc
+    import threading
+    import traceback as _tb
+    import greenlet as _greenlet_mod
+
+    lines = []
+    try:
+        lines.append("\n" + "=" * 80)
+        lines.append("!!!! GEVENT GREENLET DUMP (5-min timer) !!!!")
+        lines.append("=" * 80)
+
+        all_greenlets = [obj for obj in gc.get_objects()
+                         if isinstance(obj, _greenlet_mod.greenlet)]
+        lines.append("Total greenlets: %d" % len(all_greenlets))
+
+        for i, g in enumerate(all_greenlets):
+            lines.append("\n--- Greenlet %d ---" % i)
+            lines.append("  repr : %r" % (g,))
+            lines.append("  type : %s" % type(g).__name__)
+            lines.append("  dead : %s" % g.dead)
+            if hasattr(g, 'minimal_ident'):
+                lines.append("  ident: %s" % g.minimal_ident)
+            if hasattr(g, '_run'):
+                lines.append("  _run : %r" % (g._run,))
+            if not g.dead and g.gr_frame is not None:
+                lines.append("  stack:")
+                for line in _tb.format_stack(g.gr_frame):
+                    for subline in line.splitlines():
+                        lines.append("    " + subline)
+            elif g.dead:
+                lines.append("  (dead)")
+            else:
+                lines.append("  (no gr_frame - currently running or not started)")
+
+        lines.append("\n--- Thread stacks ---")
+        for tid, frame in sys._current_frames().items():
+            tname = "unknown"
+            for t in threading.enumerate():
+                if t.ident == tid:
+                    tname = t.name
+                    break
+            lines.append("\nThread %s (0x%x):" % (tname, tid))
+            for line in _tb.format_stack(frame):
+                for subline in line.splitlines():
+                    lines.append("    " + subline)
+
+        lines.append("\n--- Loop watchers ---")
+        try:
+            hub = get_hub_if_exists()
+            if hub and hub.loop:
+                loop = hub.loop
+                lines.append("  loop.activecnt  = %s" % getattr(loop, 'activecnt', '?'))
+                lines.append("  loop.pendingcnt = %s" % getattr(loop, 'pendingcnt', '?'))
+                lines.append("  loop.default    = %s" % getattr(loop, 'default', '?'))
+                if hasattr(loop, 'debug'):
+                    for dbg_line in loop.debug():
+                        lines.append("  %s" % dbg_line)
+        except Exception as e:
+            lines.append("  (error reading loop: %s)" % e)
+
+        lines.append("\n" + "=" * 80)
+        lines.append("!!!! END GREENLET DUMP !!!!")
+        lines.append("=" * 80 + "\n")
+    except Exception as e:
+        lines.append("GREENLET DUMP ERROR: %s" % e)
+
+    _gevent_debug_log("\n".join(lines))
+
+
 def sleep(seconds=0, ref=True):
     """
     Put the current greenlet to sleep for at least *seconds*.
@@ -721,6 +794,9 @@ class Hub(WaitOperationsGreenlet):
         """
         assert self is getcurrent(), 'Do not call Hub.run() directly'
         self.start_periodic_monitoring_thread()
+        _dump_timer = self.loop.timer(_GREENLET_DUMP_DELAY, ref=False)
+        _dump_timer.start(_dump_all_greenlets)
+        _gevent_debug_log("GREENLET DUMP timer armed for %ds" % _GREENLET_DUMP_DELAY)
         while 1:
             loop = self.loop
             loop.error_handler = self
