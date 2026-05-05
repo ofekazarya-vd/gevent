@@ -271,6 +271,17 @@ class AbstractLinkable(object):
                     except greenlet_error:
                         # couldn't switch to a greenlet, we must be
                         # running in a different thread. back on the list it goes for next time.
+                        try:
+                            from gevent.hub import _gevent_debug_log
+                            _glet = getattr(link, '__self__', None)
+                            _gevent_debug_log(
+                                "NOTIFY_LINK greenlet.error: self=0x%x (%s) link=%r greenlet=%r "
+                                "dead=%s" % (
+                                    id(self), type(self).__name__, link, _glet,
+                                    getattr(_glet, 'dead', '?'))
+                            )
+                        except Exception:
+                            pass
                         unswitched.append(link)
                     finally:
                         self._acquire_lock_for_switch_in()
@@ -376,6 +387,14 @@ class AbstractLinkable(object):
         #
         # TODO: Add a 'strict' mode that prevents doing this dance, since it's
         # inherently not safe.
+        import threading as _threading
+        from gevent.hub import _gevent_debug_log
+        _gevent_debug_log(
+            "GEVENT DEBUG: _handle_unswitched_notifications called, "
+            "unswitched=%d links, self=%s, thread=%s" % (
+                len(unswitched), self, _threading.current_thread().name
+            )
+        )
         root_greenlets = None
         printed_tb = False
         only_while_ready = not self._notify_all
@@ -406,7 +425,17 @@ class AbstractLinkable(object):
                     hub = root_greenlets.get(glet)
 
                 if hub is not None and hub.loop is not None:
-                    hub.loop.run_callback_threadsafe(link, self)
+                    try:
+                        hub.loop.run_callback_threadsafe(link, self)
+                        _gevent_debug_log(
+                            "GEVENT DEBUG: scheduled link via "
+                            "run_callback_threadsafe on hub=%s for greenlet=%s" % (hub, glet)
+                        )
+                    except Exception as exc:
+                        _gevent_debug_log(
+                            "GEVENT DEBUG: run_callback_threadsafe FAILED: %s" % exc
+                        )
+                        hub = None
             if hub is None or hub.loop is None:
                 # We couldn't handle it
                 self.__print_unswitched_warning(link, printed_tb)
@@ -432,11 +461,28 @@ class AbstractLinkable(object):
         if obj is None:
             return
 
+        _in_links = obj in self._links
         self.unlink(obj)
+
+        _in_arrived = False
         if self._notifier is not None and self._notifier.args:
             try:
                 self._notifier.args[0].remove(obj)
+                _in_arrived = True
             except ValueError:
+                pass
+
+        if not _in_links and not _in_arrived:
+            try:
+                from gevent.hub import _gevent_debug_log
+                _glet = getattr(obj, '__self__', None)
+                _gevent_debug_log(
+                    "QUIET_UNLINK_ALL ANOMALY: link not found in _links or arrived_while_waiting! "
+                    "self=0x%x (%s) obj=%r greenlet=%r notifier=%r _links=%d"
+                    % (id(self), type(self).__name__, obj, _glet,
+                       self._notifier, len(self._links))
+                )
+            except Exception:
                 pass
 
     def __wait_to_be_notified(self, rawlink): # pylint:disable=too-many-branches
@@ -447,6 +493,11 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
+            if self.hub is None:
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "GEVENT DEBUG: __wait_to_be_notified called, hub is None"
+                )
             the_hub = self.hub if self.hub is not None else get_hub()
             self._switch_to_hub(the_hub)
             # If we got here, we were automatically unlinked already.
