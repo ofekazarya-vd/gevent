@@ -114,6 +114,14 @@ class Waiter(object):
         if greenlet is None:
             self.value = value
             self._exception = None
+            try:
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "WAITER.SWITCH greenlet=None waiter=0x%x value=%r"
+                    % (id(self), value)
+                )
+            except Exception:
+                pass
         else:
             if getcurrent() is not self.hub: # pylint:disable=undefined-variable
                 raise AssertionError("Can only use Waiter.switch method from the Hub greenlet")
@@ -121,6 +129,14 @@ class Waiter(object):
             try:
                 switch(value)
             except: # pylint:disable=bare-except
+                try:
+                    from gevent.hub import _gevent_debug_log
+                    _gevent_debug_log(
+                        "WAITER.SWITCH EXCEPTION waiter=0x%x greenlet=%r dead=%s exc=%s"
+                        % (id(self), greenlet, getattr(greenlet, 'dead', '?'), sys.exc_info()[1])
+                    )
+                except Exception:
+                    pass
                 self.hub.handle_error(switch, *sys.exc_info())
 
     def switch_args(self, *args):
