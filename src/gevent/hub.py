@@ -126,6 +126,87 @@ def spawn_raw(function, *args, **kwargs):
     return g
 
 
+_GEVENT_LOG_DIR = "/tmp/gevent_sems"
+_ACQUIRE_WATCHDOG_TIMEOUT = 10.0
+
+
+def _gevent_debug_log(msg):
+    try:
+        import time as _time
+        _ts = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime())
+        msg = "[%s] %s" % (_ts, msg)
+    except Exception:
+        pass
+    try:
+        import os
+        os.makedirs(_GEVENT_LOG_DIR, exist_ok=True)
+        _tid = __import__('_thread').get_ident()
+        _lf = os.path.join(_GEVENT_LOG_DIR, str(_tid))
+        with open(_lf, "at") as _f:
+            _f.write(msg if msg.endswith("\n") else msg + "\n")
+    except Exception:
+        pass
+    try:
+        print(msg, file=sys.stderr, end="" if msg.endswith("\n") else "\n")
+    except Exception:
+        pass
+
+
+def _dump_stuck_acquire(lock_obj, hub, entry_time):
+    """Watchdog callback: fires when LockType.acquire() blocks for too long."""
+    import time
+    import threading
+    elapsed = time.monotonic() - entry_time
+    lines = []
+    try:
+        lines.append(
+            "\n!!!! GEVENT WATCHDOG: LockType.acquire() stuck for %.1fs !!!!" % elapsed
+        )
+        lines.append("  lock: %s (id=0x%x, counter=%s)" % (
+            type(lock_obj).__name__, id(lock_obj), getattr(lock_obj, 'counter', '?')
+        ))
+
+        owner = getattr(lock_obj, '_debug_owner', None)
+        if owner is not None:
+            owner_glet, owner_tident, owner_t0 = owner
+            lines.append("  lock OWNER: ident=0x%x held_for=%.1fs" % (
+                owner_tident, time.monotonic() - owner_t0
+            ))
+            lines.append("  lock OWNER greenlet: %s" % (owner_glet,))
+            try:
+                if hasattr(owner_glet, 'gr_frame') and owner_glet.gr_frame is not None:
+                    import traceback as _tb
+                    lines.append("  lock OWNER greenlet frame:")
+                    for line in _tb.format_stack(owner_glet.gr_frame):
+                        for subline in line.splitlines():
+                            lines.append("    " + subline)
+                else:
+                    lines.append("  lock OWNER greenlet: no gr_frame (running or dead)")
+            except Exception as e:
+                lines.append("  lock OWNER greenlet frame error: %s" % e)
+        else:
+            lines.append("  lock OWNER: UNKNOWN (no _debug_owner set)")
+
+        lines.append("\n  All thread stacks:")
+        for tid, frame in sys._current_frames().items():
+            tname = "unknown"
+            for t in threading.enumerate():
+                if t.ident == tid:
+                    tname = t.name
+                    break
+            lines.append("\n  Thread %s (0x%x):" % (tname, tid))
+            import traceback as _tb
+            for line in _tb.format_stack(frame):
+                for subline in line.splitlines():
+                    lines.append("    " + subline)
+
+        lines.append("\n!!!! END GEVENT ACQUIRE WATCHDOG DUMP !!!!\n")
+    except Exception as e:
+        lines.append("GEVENT WATCHDOG: error during acquire dump: %s" % e)
+
+    _gevent_debug_log("\n".join(lines))
+
+
 def sleep(seconds=0, ref=True):
     """
     Put the current greenlet to sleep for at least *seconds*.
@@ -907,3 +988,12 @@ class linkproxy(object):
         self.callback = None
         self.obj = None
         callback(obj)
+
+try:
+    _gevent_debug_log(
+        "GEVENT DEBUG: hub.py loaded - acquire_watchdog=%.1fs (pid=%d)" % (
+            _ACQUIRE_WATCHDOG_TIMEOUT, __import__('os').getpid()
+        )
+    )
+except Exception:
+    pass
