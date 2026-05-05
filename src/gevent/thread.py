@@ -289,12 +289,35 @@ class LockType(BoundedSemaphore):
             if timeout > self._TIMEOUT_MAX:
                 raise OverflowError('timeout value is too large')
 
+        _backup = None
         try:
-            acquired = BoundedSemaphore.acquire(self, blocking, timeout)
-        except LoopExit:
-            if blocking: # pragma: no cover
-                raise
-            acquired = False
+            if blocking:
+                try:
+                    _hub = get_hub_if_exists()
+                    if _hub is not None and _hub.loop is not None:
+                        from gevent.hub import _dump_stuck_acquire, _ACQUIRE_WATCHDOG_TIMEOUT
+                        _backup = _hub.loop.timer(_ACQUIRE_WATCHDOG_TIMEOUT, ref=False)
+                        _backup.start(
+                            _dump_stuck_acquire,
+                            self, _hub,
+                            __import__('time').monotonic()
+                        )
+                except Exception:
+                    _backup = None
+
+            try:
+                acquired = BoundedSemaphore.acquire(self, blocking, timeout)
+            except LoopExit:
+                if blocking: # pragma: no cover
+                    raise
+                acquired = False
+        finally:
+            if _backup is not None:
+                try:
+                    _backup.stop()
+                    _backup.close()
+                except Exception:
+                    pass
 
         if acquired:
             self._owner_greenlet = getcurrent()
