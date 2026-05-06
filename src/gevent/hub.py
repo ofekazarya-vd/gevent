@@ -166,12 +166,8 @@ def _dump_stuck_acquire(lock_obj, hub, entry_time):
             type(lock_obj).__name__, id(lock_obj), getattr(lock_obj, 'counter', '?')
         ))
 
-        owner = getattr(lock_obj, '_debug_owner', None)
-        if owner is not None:
-            owner_glet, owner_tident, owner_t0 = owner
-            lines.append("  lock OWNER: ident=0x%x held_for=%.1fs" % (
-                owner_tident, time.monotonic() - owner_t0
-            ))
+        owner_glet = getattr(lock_obj, '_owner_greenlet', None)
+        if owner_glet is not None:
             lines.append("  lock OWNER greenlet: %s" % (owner_glet,))
             try:
                 if hasattr(owner_glet, 'gr_frame') and owner_glet.gr_frame is not None:
@@ -185,7 +181,7 @@ def _dump_stuck_acquire(lock_obj, hub, entry_time):
             except Exception as e:
                 lines.append("  lock OWNER greenlet frame error: %s" % e)
         else:
-            lines.append("  lock OWNER: UNKNOWN (no _debug_owner set)")
+            lines.append("  lock OWNER: UNKNOWN (no _owner_greenlet set)")
 
         lines.append("\n  All thread stacks:")
         for tid, frame in sys._current_frames().items():
