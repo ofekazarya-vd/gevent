@@ -54,6 +54,13 @@ class WaitOperationsGreenlet(SwitchOutGreenletWithLoop): # pylint:disable=undefi
         try:
             result = waiter.get()
             if result is not waiter:
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "HUB.WAIT InvalidSwitch (returning early): got %r expected waiter=0x%x watcher=%r greenlet=%r\n%s"
+                    % (result, id(waiter), watcher, getcurrent(), # pylint:disable=undefined-variable
+                        ''.join(traceback.format_stack()))
+                )
+
                 raise InvalidSwitchError(
                     'Invalid switch into %s: got %r (expected %r; waiting on %r with %r)' % (
                         getcurrent(), # pylint:disable=undefined-variable

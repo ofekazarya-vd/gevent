@@ -271,6 +271,14 @@ class AbstractLinkable(object):
                     except greenlet_error:
                         # couldn't switch to a greenlet, we must be
                         # running in a different thread. back on the list it goes for next time.
+                        from gevent.hub import _gevent_debug_log
+                        _glet = getattr(link, '__self__', None)
+                        _gevent_debug_log(
+                            "NOTIFY_LINK greenlet.error: self=0x%x (%s) link=%r greenlet=%r "
+                            "dead=%s" % (
+                                id(self), type(self).__name__, link, _glet,
+                                getattr(_glet, 'dead', '?'))
+                        )
                         unswitched.append(link)
                     finally:
                         self._acquire_lock_for_switch_in()
@@ -447,7 +455,14 @@ class AbstractLinkable(object):
             self._notifier.args[0].append(resume_this_greenlet)
 
         try:
-            the_hub = self.hub if self.hub is not None else get_hub()
+            if self.hub is None:
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "__wait_to_be_notified called, hub is None"
+                )
+                the_hub = get_hub()
+            else:
+                the_hub = self.hub
             self._switch_to_hub(the_hub)
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None

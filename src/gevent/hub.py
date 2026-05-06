@@ -126,6 +126,17 @@ def spawn_raw(function, *args, **kwargs):
     return g
 
 
+def _gevent_debug_log(msg):
+    try:
+        import time as _time
+        _ts = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime())
+        msg = "[%s] GEVENT DEBUG: %s" % (_ts, msg)
+
+        print(msg, file=sys.stderr, end="" if msg.endswith("\n") else "\n")
+    except Exception:
+        pass
+
+
 def sleep(seconds=0, ref=True):
     """
     Put the current greenlet to sleep for at least *seconds*.

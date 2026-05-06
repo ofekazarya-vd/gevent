@@ -293,8 +293,22 @@ class LockType(BoundedSemaphore):
             acquired = BoundedSemaphore.acquire(self, blocking, timeout)
         except LoopExit:
             if blocking: # pragma: no cover
+                import traceback
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "Lock acquire failed with LoopExit: lock=%r greenlet=%r\n%s"
+                    % (self, getcurrent(), ''.join(traceback.format_exc()))
+                )
                 raise
             acquired = False
+        except Exception as ex:
+            import traceback
+            from gevent.hub import _gevent_debug_log
+            _gevent_debug_log(
+                "Lock acquire failed with %s: %s lock=%r greenlet=%r\n%s"
+                % (type(ex).__name__, ex, self, getcurrent(), ''.join(traceback.format_exc()))
+            )
+            raise
 
         if acquired:
             self._owner_greenlet = getcurrent()
