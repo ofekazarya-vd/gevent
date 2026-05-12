@@ -769,6 +769,8 @@ class Popen(object):
          c2pread, c2pwrite,
          errread, errwrite) = self._get_handles(stdin, stdout, stderr)
 
+        self._gc_count_before_wrap = gc.get_count()
+
         # We wrap OS handles *before* launching the child, otherwise a
         # quickly terminating child could make our fds unwrappable
         # (see #8458).
@@ -816,6 +818,19 @@ class Popen(object):
                                          encoding=encoding, errors=errors)
             else:
                 self.stderr = FileObject(errread, 'rb', bufsize)
+
+        self._gc_count_after_wrap = gc.get_count()
+        import fcntl as _fcntl
+        for _fd_name, _fd_val in (('p2cwrite', p2cwrite), ('c2pread', c2pread), ('errread', errread)):
+            if _fd_val != -1:
+                try:
+                    _fcntl.fcntl(_fd_val, _fcntl.F_GETFD)
+                except OSError:
+                    from gevent.hub import _gevent_debug_log
+                    _gevent_debug_log(
+                        "SUBPROCESS.INVALID_FD_AFTER_WRAP: %s=%d gc_before=%s gc_after=%s"
+                        % (_fd_name, _fd_val, self._gc_count_before_wrap, self._gc_count_after_wrap)
+                    )
 
         self._closed_child_pipe_fds = False
         # Convert here for the sake of all platforms. os.chdir accepts
@@ -1636,6 +1651,18 @@ class Popen(object):
             try:
                 try:
                     gc_was_enabled = gc.isenabled()
+                    import fcntl as _fcntl
+                    for _fd_name, _fd_val in (('p2cwrite', p2cwrite), ('c2pread', c2pread),
+                                              ('errread', errread), ('errpipe_read', errpipe_read)):
+                        if _fd_val != -1:
+                            try:
+                                _fcntl.fcntl(_fd_val, _fcntl.F_GETFD)
+                            except OSError:
+                                from gevent.hub import _gevent_debug_log
+                                _gevent_debug_log(
+                                    "SUBPROCESS.INVALID_FD_BEFORE_FORK: %s=%d gc_count=%s"
+                                    % (_fd_name, _fd_val, gc.get_count())
+                                )
                     # Disable gc to avoid bug where gc -> file_dealloc ->
                     # write to stderr -> hang.  http://bugs.python.org/issue1336
                     gc.disable()
@@ -1669,13 +1696,21 @@ class Popen(object):
                         # CPython 2 pretty much did what we're doing.)
                         try:
                             # Close parent's pipe ends
-                            if p2cwrite != -1:
-                                os_close(p2cwrite)
-                            if c2pread != -1:
-                                os_close(c2pread)
-                            if errread != -1:
-                                os_close(errread)
-                            os_close(errpipe_read)
+                            for _cfd_name, _cfd in (('p2cwrite', p2cwrite), ('c2pread', c2pread),
+                                                     ('errread', errread)):
+                                if _cfd != -1:
+                                    try:
+                                        os_close(_cfd)
+                                    except OSError as _cfd_err:
+                                        _cfd_err._failed_fd_name = _cfd_name
+                                        _cfd_err._failed_fd_num = _cfd
+                                        raise
+                            try:
+                                os_close(errpipe_read)
+                            except OSError as _cfd_err:
+                                _cfd_err._failed_fd_name = 'errpipe_read'
+                                _cfd_err._failed_fd_num = errpipe_read
+                                raise
 
                             # When duping fds, if there arises a situation
                             # where one of the fds is either 0, 1 or 2, it
@@ -1853,6 +1888,19 @@ class Popen(object):
                         child_exception.filename = cwd
                     if getattr(child_exception, '_failed_chuser', False):
                         child_exception.filename = None
+                    if child_exception.errno == 9:
+                        from gevent.hub import _gevent_debug_log
+                        _gevent_debug_log(
+                            "SUBPROCESS.CHILD_EBADF: fd_name=%s fd_num=%s "
+                            "pipe_fds=(%d,%d,%d,%d,%d,%d) "
+                            "gc_before_wrap=%s gc_after_wrap=%s args=%r"
+                            % (getattr(child_exception, '_failed_fd_name', '?'),
+                               getattr(child_exception, '_failed_fd_num', '?'),
+                               p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite,
+                               getattr(self, '_gc_count_before_wrap', '?'),
+                               getattr(self, '_gc_count_after_wrap', '?'),
+                               args[:3])
+                        )
                 raise child_exception
 
         def _handle_exitstatus(self, sts, _WIFSIGNALED=os.WIFSIGNALED,
