@@ -124,6 +124,14 @@ class GreenFileDescriptorIO(RawIOBase):
     def close(self):
         if self._closed:
             return
+        import sys
+        _frame = sys._getframe(1)
+        _caller = _frame.f_code.co_name if _frame else '?'
+        if _caller in ('__del__', '_do_close_uninitialized', 'tp_dealloc') or \
+           (_frame and _frame.f_code.co_filename and 'weakref' in _frame.f_code.co_filename):
+            from gevent.hub import _gevent_debug_log
+            _gevent_debug_log(
+                "GFDIO.GC_CLOSE: fd=%s caller=%s:%s" % (self._fileno, _caller, _frame.f_code.co_filename))
         self.flush()
         # TODO: Can we use 'read_event is not None and write_event is
         # not None' to mean _closed?

@@ -820,17 +820,6 @@ class Popen(object):
                 self.stderr = FileObject(errread, 'rb', bufsize)
 
         self._gc_count_after_wrap = gc.get_count()
-        import fcntl as _fcntl
-        for _fd_name, _fd_val in (('p2cwrite', p2cwrite), ('c2pread', c2pread), ('errread', errread)):
-            if _fd_val != -1:
-                try:
-                    _fcntl.fcntl(_fd_val, _fcntl.F_GETFD)
-                except OSError:
-                    from gevent.hub import _gevent_debug_log
-                    _gevent_debug_log(
-                        "SUBPROCESS.INVALID_FD_AFTER_WRAP: %s=%d gc_before=%s gc_after=%s"
-                        % (_fd_name, _fd_val, self._gc_count_before_wrap, self._gc_count_after_wrap)
-                    )
 
         self._closed_child_pipe_fds = False
         # Convert here for the sake of all platforms. os.chdir accepts
@@ -1651,18 +1640,6 @@ class Popen(object):
             try:
                 try:
                     gc_was_enabled = gc.isenabled()
-                    import fcntl as _fcntl
-                    for _fd_name, _fd_val in (('p2cwrite', p2cwrite), ('c2pread', c2pread),
-                                              ('errread', errread), ('errpipe_read', errpipe_read)):
-                        if _fd_val != -1:
-                            try:
-                                _fcntl.fcntl(_fd_val, _fcntl.F_GETFD)
-                            except OSError:
-                                from gevent.hub import _gevent_debug_log
-                                _gevent_debug_log(
-                                    "SUBPROCESS.INVALID_FD_BEFORE_FORK: %s=%d gc_count=%s"
-                                    % (_fd_name, _fd_val, gc.get_count())
-                                )
                     # Disable gc to avoid bug where gc -> file_dealloc ->
                     # write to stderr -> hang.  http://bugs.python.org/issue1336
                     gc.disable()
@@ -1705,6 +1682,21 @@ class Popen(object):
                         # try hard not to call things like malloc(). (Of course,
                         # CPython 2 pretty much did what we're doing.)
                         try:
+                            import fcntl as _child_fcntl
+                            _bad_child_fds = []
+                            for _cn, _cv in (('p2cread', p2cread), ('p2cwrite', p2cwrite),
+                                             ('c2pread', c2pread), ('c2pwrite', c2pwrite),
+                                             ('errread', errread), ('errwrite', errwrite),
+                                             ('errpipe_read', errpipe_read), ('errpipe_write', errpipe_write)):
+                                if _cv != -1:
+                                    try:
+                                        _child_fcntl.fcntl(_cv, _child_fcntl.F_GETFD)
+                                    except OSError:
+                                        _bad_child_fds.append((_cn, _cv))
+                            if _bad_child_fds:
+                                os.write(errpipe_write,
+                                         pickle.dumps(OSError(9, 'CHILD_POST_FORK_INVALID: %s' % _bad_child_fds)))
+                                os._exit(1)
                             # Close parent's pipe ends
                             for _cfd_name, _cfd in (('p2cwrite', p2cwrite), ('c2pread', c2pread),
                                                      ('errread', errread)):
@@ -1726,21 +1718,36 @@ class Popen(object):
                             # where one of the fds is either 0, 1 or 2, it
                             # is possible that it is overwritten (#12607).
                             if c2pwrite == 0:
-                                c2pwrite = os.dup(c2pwrite)
+                                try:
+                                    c2pwrite = os.dup(c2pwrite)
+                                except OSError as e:
+                                    e._failed_fd_name = 'dup(c2pwrite)'
+                                    e._failed_fd_num = c2pwrite
+                                    raise
                                 _set_inheritable(c2pwrite, False)
                             while errwrite in (0, 1):
-                                errwrite = os.dup(errwrite)
+                                try:
+                                    errwrite = os.dup(errwrite)
+                                except OSError as e:
+                                    e._failed_fd_name = 'dup(errwrite)'
+                                    e._failed_fd_num = errwrite
+                                    raise
                                 _set_inheritable(errwrite, False)
 
                             # Dup fds for child
-                            def _dup2(existing, desired):
+                            def _dup2(existing, desired, _name='?'):
                                 # dup2() removes the CLOEXEC flag but
                                 # we must do it ourselves if dup2()
                                 # would be a no-op (issue #10806).
                                 if existing == desired:
                                     self._set_cloexec_flag(existing, False)
                                 elif existing != -1:
-                                    os.dup2(existing, desired)
+                                    try:
+                                        os.dup2(existing, desired)
+                                    except OSError as e:
+                                        e._failed_fd_name = 'dup2(%s)' % _name
+                                        e._failed_fd_num = existing
+                                        raise
                                 try:
                                     self._remove_nonblock_flag(desired)
                                 except OSError:
@@ -1748,9 +1755,9 @@ class Popen(object):
                                     # open yet.
                                     # Tested beginning in 3.7.0b3 test_subprocess.py
                                     pass
-                            _dup2(p2cread, 0)
-                            _dup2(c2pwrite, 1)
-                            _dup2(errwrite, 2)
+                            _dup2(p2cread, 0, 'p2cread->0')
+                            _dup2(c2pwrite, 1, 'c2pwrite->1')
+                            _dup2(errwrite, 2, 'errwrite->2')
 
                             # Close pipe fds.  Make sure we don't close the
                             # same fd more than once, or standard fds.
