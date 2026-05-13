@@ -1667,6 +1667,16 @@ class Popen(object):
                     # write to stderr -> hang.  http://bugs.python.org/issue1336
                     gc.disable()
                     try:
+                        from gevent.hub import get_hub as _get_hub, _gevent_debug_log
+                        try:
+                            _loop_fd = _get_hub().loop.fileno()
+                        except Exception:
+                            _loop_fd = '?'
+                        _gevent_debug_log(
+                            "SUBPROCESS.PRE_FORK: loop_fd=%s pipe_fds=(%d,%d,%d,%d,%d,%d) errpipe=(%d,%d)"
+                            % (_loop_fd, p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite,
+                               errpipe_read, errpipe_write)
+                        )
                         self.pid = fork_and_watch(self._on_child, self._loop, True, fork)
                     except:
                         if gc_was_enabled:
