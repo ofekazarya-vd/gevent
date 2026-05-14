@@ -317,46 +317,47 @@ if hasattr(os, 'fork'):
         """
         import warnings
         import fcntl as _fork_fcntl
-        # Snapshot all open FDs before fork for post-fork comparison
+        import traceback as _fork_tb
         _pre_fork_fds = set()
         try:
             _pre_fork_fds = set(int(fd) for fd in _os.listdir('/proc/self/fd'))
         except Exception:
             pass
 
-        # The simple `catch_warnings(action='ignore', category=DeprecationWarning)`
-        # is only available in 3.11+.
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', DeprecationWarning)
             result = _raw_fork()
         if not result:
-            # Child: check which FDs died during fork (before reinit)
-            _dead_before_reinit = []
+            # Child: intercept os.close to capture stack traces
+            _real_close = _os.close
+            _close_traces = {}
+
+            def _tracing_close(fd):
+                _close_traces[fd] = ''.join(_fork_tb.format_stack()[:-1])
+                return _real_close(fd)
+
+            _os.close = _tracing_close
+            try:
+                reinit()
+            finally:
+                _os.close = _real_close
+
+            # Check which parent FDs died
+            _dead_fds = []
             for _fd in _pre_fork_fds:
                 if _fd < 3:
                     continue
                 try:
                     _fork_fcntl.fcntl(_fd, _fork_fcntl.F_GETFD)
                 except OSError:
-                    _dead_before_reinit.append(_fd)
+                    _dead_fds.append(_fd)
 
-            reinit()
-
-            # Check which FDs died during reinit
-            _dead_after_reinit = []
-            for _fd in _pre_fork_fds:
-                if _fd < 3 or _fd in _dead_before_reinit:
-                    continue
-                try:
-                    _fork_fcntl.fcntl(_fd, _fork_fcntl.F_GETFD)
-                except OSError:
-                    _dead_after_reinit.append(_fd)
-
-            if _dead_before_reinit or _dead_after_reinit:
+            if _dead_fds:
                 from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "FORK.FD_DEATHS: before_reinit=%s after_reinit=%s"
-                    % (_dead_before_reinit, _dead_after_reinit))
+                _traces = {fd: _close_traces.get(fd, 'NOT via os.close (C-level)')
+                           for fd in _dead_fds}
+                for fd, trace in _traces.items():
+                    _gevent_debug_log("FORK.FD_CLOSED: fd=%d trace=%s" % (fd, trace.replace('\n', ' | ')))
         return result
 
     def fork():
