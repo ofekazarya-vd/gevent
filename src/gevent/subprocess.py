@@ -306,9 +306,15 @@ else:
     _libc = ctypes.CDLL(None, use_errno=True)
     _libc_fork = _libc.fork
     _libc_fork.restype = ctypes.c_int
+    _PyOS_BeforeFork = ctypes.pythonapi.PyOS_BeforeFork
+    _PyOS_BeforeFork.restype = None
+    _PyOS_BeforeFork.argtypes = []
     _PyOS_AfterFork_Child = ctypes.pythonapi.PyOS_AfterFork_Child
     _PyOS_AfterFork_Child.restype = None
     _PyOS_AfterFork_Child.argtypes = []
+    _PyOS_AfterFork_Parent = ctypes.pythonapi.PyOS_AfterFork_Parent
+    _PyOS_AfterFork_Parent.restype = None
+    _PyOS_AfterFork_Parent.argtypes = []
 
     def fork():
         _pre_fds = set()
@@ -323,6 +329,7 @@ else:
         except Exception:
             pass
 
+        _PyOS_BeforeFork()
         pid = _libc_fork()
 
         if pid == 0:
@@ -359,6 +366,8 @@ else:
                         "FORK.PHASE2_PYTHON: fd=%d target=%s" % (fd, _fd_targets.get(fd, '?')))
             if not dead_phase1 and not dead_phase2:
                 _gevent_debug_log("FORK.ALL_FDS_ALIVE: count=%d" % len(_pre_fds))
+        else:
+            _PyOS_AfterFork_Parent()
         return pid
 
 STDOUT = __subprocess__.STDOUT # static analysis
