@@ -305,8 +305,14 @@ else:
     def fork():
         import sys as _sys
         _pre_fds = set()
+        _fd_targets = {}
         try:
             _pre_fds = set(int(fd) for fd in os.listdir('/proc/self/fd'))
+            for fd in _pre_fds:
+                try:
+                    _fd_targets[fd] = os.readlink('/proc/self/fd/%d' % fd)
+                except OSError:
+                    _fd_targets[fd] = '?'
         except Exception:
             pass
         _real_close = os.close
@@ -346,11 +352,12 @@ else:
                 from gevent.hub import _gevent_debug_log
                 for fd in sorted(dead):
                     trace = _close_traces.get(fd)
+                    target = _fd_targets.get(fd, '?')
                     if trace:
                         trace_str = ' <- '.join('%s:%d:%s' % t for t in trace)
                     else:
                         trace_str = 'NOT via os.close (C-level)'
-                    _gevent_debug_log("SUBPROCESS.FORK.FD_DEAD: fd=%d trace=%s" % (fd, trace_str))
+                    _gevent_debug_log("SUBPROCESS.FORK.FD_DEAD: fd=%d target=%s trace=%s" % (fd, target, trace_str))
         else:
             os.close = _real_close
         return pid
