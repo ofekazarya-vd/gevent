@@ -299,8 +299,61 @@ else:
     import fcntl
     import pickle
     from gevent import monkey
-    fork = monkey.get_original('os', 'fork')
+    _original_fork = monkey.get_original('os', 'fork')
     from gevent.os import fork_and_watch
+
+    def fork():
+        import sys as _sys
+        _pre_fds = set()
+        try:
+            _pre_fds = set(int(fd) for fd in os.listdir('/proc/self/fd'))
+        except Exception:
+            pass
+        _real_close = os.close
+        _close_traces = {}
+
+        def _tracing_close(fd):
+            _frames = []
+            try:
+                f = _sys._getframe(1)
+                for _ in range(8):
+                    if f is None:
+                        break
+                    _frames.append((f.f_code.co_filename, f.f_lineno, f.f_code.co_name))
+                    f = f.f_back
+            except Exception:
+                pass
+            _close_traces[fd] = _frames
+            return _real_close(fd)
+
+        os.close = _tracing_close
+        try:
+            pid = _original_fork()
+        except:
+            os.close = _real_close
+            raise
+        if pid == 0:
+            os.close = _real_close
+            dead = []
+            for fd in _pre_fds:
+                if fd < 3:
+                    continue
+                try:
+                    fcntl.fcntl(fd, fcntl.F_GETFD)
+                except OSError:
+                    dead.append(fd)
+            if dead:
+                from gevent.hub import _gevent_debug_log
+                for fd in sorted(dead):
+                    trace = _close_traces.get(fd)
+                    if trace:
+                        trace_str = ' <- '.join('%s:%d:%s' % t for t in trace)
+                    else:
+                        trace_str = 'NOT via os.close (C-level)'
+                    _gevent_debug_log("SUBPROCESS.FORK.FD_DEAD: fd=%d trace=%s" % (fd, trace_str))
+        else:
+            os.close = _real_close
+        return pid
 
 STDOUT = __subprocess__.STDOUT # static analysis
 
@@ -1649,10 +1702,20 @@ class Popen(object):
                             _loop_fd = _get_hub().loop.fileno()
                         except Exception:
                             _loop_fd = '?'
+                        _invalid_pre = []
+                        for _pn, _pv in (('p2cread', p2cread), ('p2cwrite', p2cwrite),
+                                         ('c2pread', c2pread), ('c2pwrite', c2pwrite),
+                                         ('errread', errread), ('errwrite', errwrite)):
+                            if _pv != -1:
+                                try:
+                                    fcntl.fcntl(_pv, fcntl.F_GETFD)
+                                except OSError:
+                                    _invalid_pre.append((_pn, _pv))
                         _gevent_debug_log(
-                            "SUBPROCESS.PRE_FORK: loop_fd=%s pipe_fds=(%d,%d,%d,%d,%d,%d) errpipe=(%d,%d)"
+                            "SUBPROCESS.PRE_FORK: loop_fd=%s pipe_fds=(%d,%d,%d,%d,%d,%d) errpipe=(%d,%d)%s"
                             % (_loop_fd, p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite,
-                               errpipe_read, errpipe_write)
+                               errpipe_read, errpipe_write,
+                               (' INVALID_BEFORE_FORK=%s' % _invalid_pre) if _invalid_pre else '')
                         )
                         self.pid = fork_and_watch(self._on_child, self._loop, True, fork)
                     except:
