@@ -298,12 +298,19 @@ if mswindows:
 else:
     import fcntl
     import pickle
+    import ctypes
     from gevent import monkey
     _original_fork = monkey.get_original('os', 'fork')
     from gevent.os import fork_and_watch
 
+    _libc = ctypes.CDLL(None, use_errno=True)
+    _libc_fork = _libc.fork
+    _libc_fork.restype = ctypes.c_int
+    _PyOS_AfterFork_Child = ctypes.pythonapi.PyOS_AfterFork_Child
+    _PyOS_AfterFork_Child.restype = None
+    _PyOS_AfterFork_Child.argtypes = []
+
     def fork():
-        import sys as _sys
         _pre_fds = set()
         _fd_targets = {}
         try:
@@ -315,51 +322,43 @@ else:
                     _fd_targets[fd] = '?'
         except Exception:
             pass
-        _real_close = os.close
-        _close_traces = {}
 
-        def _tracing_close(fd):
-            _frames = []
-            try:
-                f = _sys._getframe(1)
-                for _ in range(8):
-                    if f is None:
-                        break
-                    _frames.append((f.f_code.co_filename, f.f_lineno, f.f_code.co_name))
-                    f = f.f_back
-            except Exception:
-                pass
-            _close_traces[fd] = _frames
-            return _real_close(fd)
+        pid = _libc_fork()
 
-        os.close = _tracing_close
-        try:
-            pid = _original_fork()
-        except:
-            os.close = _real_close
-            raise
         if pid == 0:
-            os.close = _real_close
-            dead = []
+            dead_phase1 = []
             for fd in _pre_fds:
                 if fd < 3:
                     continue
                 try:
                     fcntl.fcntl(fd, fcntl.F_GETFD)
                 except OSError:
-                    dead.append(fd)
-            if dead:
-                from gevent.hub import _gevent_debug_log
-                for fd in sorted(dead):
-                    trace = _close_traces.get(fd)
-                    target = _fd_targets.get(fd, '?')
-                    if trace:
-                        trace_str = ' <- '.join('%s:%d:%s' % t for t in trace)
-                    else:
-                        trace_str = 'NOT via os.close (C-level)'
-                    _gevent_debug_log("SUBPROCESS.FORK.FD_DEAD: fd=%d target=%s trace=%s" % (fd, target, trace_str))
-        else:
-            os.close = _real_close
+                    dead_phase1.append(fd)
+
+            _PyOS_AfterFork_Child()
+
+            dead_phase2 = []
+            for fd in _pre_fds:
+                if fd < 3:
+                    continue
+                if fd in dead_phase1:
+                    continue
+                try:
+                    fcntl.fcntl(fd, fcntl.F_GETFD)
+                except OSError:
+                    dead_phase2.append(fd)
+
+            from gevent.hub import _gevent_debug_log
+            if dead_phase1:
+                for fd in sorted(dead_phase1):
+                    _gevent_debug_log(
+                        "FORK.PHASE1_ATFORK: fd=%d target=%s" % (fd, _fd_targets.get(fd, '?')))
+            if dead_phase2:
+                for fd in sorted(dead_phase2):
+                    _gevent_debug_log(
+                        "FORK.PHASE2_PYTHON: fd=%d target=%s" % (fd, _fd_targets.get(fd, '?')))
+            if not dead_phase1 and not dead_phase2:
+                _gevent_debug_log("FORK.ALL_FDS_ALIVE: count=%d" % len(_pre_fds))
         return pid
 
 STDOUT = __subprocess__.STDOUT # static analysis
