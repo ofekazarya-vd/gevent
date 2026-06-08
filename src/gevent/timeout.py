@@ -362,14 +362,6 @@ class Timeout(BaseException):
            The underlying native timer is also stopped. This object cannot be
            used again.
         """
-        fired = (value is self) or (self.exception is not None and value is self.exception)
-        if fired:
-            if not isinstance(self.exception, TimeoutError) or self.seconds != 0.1:
-                from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "TIMEOUT.FIRED id=0x%x seconds=%s suppressed=%s exc_type=%r"
-                    % (id(self), self.seconds, self.exception is False, typ)
-                )
         self.close()
         if value is self and self.exception is False:
             return True # Suppress the exception

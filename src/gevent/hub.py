@@ -130,7 +130,7 @@ def _gevent_debug_log(msg):
     try:
         import time as _time
         _ts = _time.strftime("%Y-%m-%dT%H:%M:%S", _time.localtime())
-        msg = "[%s] GEVENT DEBUG: %s" % (_ts, msg)
+        msg = "[%s] gevent debug: %s" % (_ts, msg)
 
         print(msg, file=sys.stderr, end="" if msg.endswith("\n") else "\n")
     except Exception:
