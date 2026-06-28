@@ -318,6 +318,12 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
 
     def __acquire_from_other_thread(self, ex_args, blocking, timeout):
         assert blocking
+        from gevent.hub import _gevent_debug_log
+        _gevent_debug_log(
+            "OFEKA_LOGS acquire-from-other-thread lock=0x%x (%s) name=%s reason=%s blocking=%s timeout=%s glet=%r"
+            % (id(self), type(self).__name__, getattr(self, '_vast_name', '?'),
+               ex_args[3] if len(ex_args) > 3 else 'InvalidThreadUse',
+               blocking, timeout, self._getcurrent()))
         # Some other hub owns this object. We must ask it to wake us
         # up. In general, we can't use a Python-level ``Lock`` because
         #

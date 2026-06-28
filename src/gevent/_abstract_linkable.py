@@ -230,6 +230,11 @@ class AbstractLinkable(object):
             else:
                 # Hmm, no hub. We must be the only thing running. Then its OK
                 # to just directly call the callbacks.
+                from gevent.hub import _gevent_debug_log
+                _gevent_debug_log(
+                    "OFEKA_LOGS check_and_notify NO-HUB direct-notify lock=0x%x (%s) name=%s links=%d glet=%r"
+                    % (id(self), type(self).__name__, getattr(self, '_vast_name', '?'),
+                       len(self._links), getcurrent()))
                 self._notifier = 1
                 try:
                     self._notify_links([])
@@ -274,9 +279,9 @@ class AbstractLinkable(object):
                         from gevent.hub import _gevent_debug_log
                         _glet = getattr(link, '__self__', None)
                         _gevent_debug_log(
-                            "NOTIFY_LINK greenlet.error: self=0x%x (%s) link=%r greenlet=%r "
+                            "OFEKA_LOGS NOTIFY_LINK greenlet.error: self=0x%x (%s) name=%s link=%r greenlet=%r "
                             "dead=%s" % (
-                                id(self), type(self).__name__, link, _glet,
+                                id(self), type(self).__name__, getattr(self, '_vast_name', '?'), link, _glet,
                                 getattr(_glet, 'dead', '?'))
                         )
                         unswitched.append(link)
@@ -364,6 +369,10 @@ class AbstractLinkable(object):
 
 
     def _handle_unswitched_notifications(self, unswitched):
+        from gevent.hub import _gevent_debug_log
+        _gevent_debug_log(
+            "OFEKA_LOGS unswitched-notifications ENTER lock=0x%x (%s) name=%s count=%d"
+            % (id(self), type(self).__name__, getattr(self, '_vast_name', '?'), len(unswitched)))
         # Given a list of callable objects that raised
         # ``greenlet.error`` when we called them: If we can determine
         # that it is a parked greenlet (the callablle is a
@@ -414,9 +423,15 @@ class AbstractLinkable(object):
                     hub = root_greenlets.get(glet)
 
                 if hub is not None and hub.loop is not None:
+                    _gevent_debug_log(
+                        "OFEKA_LOGS unswitched-notifications RESCHEDULE-threadsafe lock=0x%x name=%s target_hub=0x%x link=%r"
+                        % (id(self), getattr(self, '_vast_name', '?'), id(hub), link))
                     hub.loop.run_callback_threadsafe(link, self)
             if hub is None or hub.loop is None:
                 # We couldn't handle it
+                _gevent_debug_log(
+                    "OFEKA_LOGS unswitched-notifications DROPPED lock=0x%x name=%s link=%r"
+                    % (id(self), getattr(self, '_vast_name', '?'), link))
                 self.__print_unswitched_warning(link, printed_tb)
                 printed_tb = True
 
@@ -458,7 +473,8 @@ class AbstractLinkable(object):
             if self.hub is None:
                 from gevent.hub import _gevent_debug_log
                 _gevent_debug_log(
-                    "__wait_to_be_notified called, hub is None"
+                    "OFEKA_LOGS __wait_to_be_notified hub is None lock=0x%x (%s) name=%s glet=%r"
+                    % (id(self), type(self).__name__, getattr(self, '_vast_name', '?'), getcurrent())
                 )
                 the_hub = get_hub()
             else:
