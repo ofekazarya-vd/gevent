@@ -45,6 +45,8 @@ from heapq import heapify as _heapify
 import collections
 import types
 
+import traceback
+
 import queue as __queue__
 # We re-export these exceptions to client modules.
 # But we also want fast access to them from Cython with a cdef,
@@ -657,7 +659,7 @@ class PriorityQueue(Queue):
 
     def _get(self):
         x = _heappop(self.queue)
-        print("0x%x Poped item=%r from queue" % (id(self.queue), x))
+        print("0x%x Poped item=%r from queue. stack: \n%s" % (id(self.queue), x, ''.join(traceback.format_exc())))
         return x
 
 
