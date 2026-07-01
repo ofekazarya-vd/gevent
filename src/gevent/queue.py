@@ -282,6 +282,7 @@ class SimpleQueue(object):
 
     def empty(self):
         """Return ``True`` if the queue is empty, ``False`` otherwise."""
+        print("0x%x empty() check, qsize=%d" % (id(self.queue), self.qsize()))
         return not self.qsize()
 
     def full(self):
@@ -646,14 +647,18 @@ class PriorityQueue(Queue):
     def _create_queue(self, items=()):
         q = list(items)
         _heapify(q)
+        print("0x%x Seeded queue with items=%r" % (id(q), q))
         return q
 
     def _put(self, item):
+        print("0x%x Pushed item=%r in to queue" % (id(self.queue), item))
         _heappush(self.queue, item)
         self._did_put_task()
 
     def _get(self):
-        return _heappop(self.queue)
+        x = _heappop(self.queue)
+        print("0x%x Poped item=%r from queue" % (id(self.queue), x))
+        return x
 
 
 class LifoQueue(Queue):
