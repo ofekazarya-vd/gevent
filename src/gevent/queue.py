@@ -659,7 +659,7 @@ class PriorityQueue(Queue):
 
     def _get(self):
         x = _heappop(self.queue)
-        print("0x%x Poped item=%r from queue. stack: \n%s" % (id(self.queue), x, ''.join(traceback.format_exc())))
+        print("0x%x Poped item=%r from queue. stack: \n%s" % (id(self.queue), x, ''.join(traceback.format_stack())))
         return x
 
 
