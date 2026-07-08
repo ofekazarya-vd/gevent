@@ -137,6 +137,79 @@ def _gevent_debug_log(msg):
         pass
 
 
+# --- ORION-387413 fd-reuse diagnostics --------------------------------------
+# We are chasing a BrokenPipeError raised when a FileObjectThread flushes/closes
+# a plain on-disk CSV. EPIPE is impossible on a regular file, so the fd number
+# must have been closed behind the FileObject's back and recycled to a socket
+# (suspected py4j/Spark localhost socket). These helpers maintain a map of
+# fd-number -> owning FileObject and shout when a *different* opener (e.g. a
+# socket) grabs an fd that a FileObject still believes it holds. That collision,
+# plus the /proc/self/fd readlink at the moment of failure, is the direct proof
+# of the aliasing. Keep this cheap: only FileObjects are stored (they are rare),
+# sockets merely probe the map on creation.
+_fd_file_owners = {}  # fileno -> (name, open_stack)
+
+
+def _fd_capture_stack(skip=2, depth=10):
+    frames = []
+    try:
+        f = sys._getframe(skip)
+        for _ in range(depth):
+            if f is None:
+                break
+            frames.append("%s:%d:%s" % (f.f_code.co_filename, f.f_lineno, f.f_code.co_name))
+            f = f.f_back
+    except Exception:
+        pass
+    return ' <- '.join(frames)
+
+
+def _fd_readlink(fileno):
+    try:
+        import os as _os
+        return _os.readlink('/proc/self/fd/%d' % int(fileno))
+    except Exception:
+        return '?'
+
+
+def _fd_file_opened(fileno, name):
+    try:
+        fileno = int(fileno)
+    except Exception:
+        return
+    if fileno < 0:
+        return
+    prev = _fd_file_owners.get(fileno)
+    if prev is not None and prev[0] != name:
+        _gevent_debug_log(
+            "FD_REUSE_COLLISION[file->file]: fd=%d stole_from=%r prev_open=%s "
+            "new_owner=%r new_open=%s"
+            % (fileno, prev[0], prev[1], name, _fd_capture_stack()))
+    _fd_file_owners[fileno] = (name, _fd_capture_stack())
+
+
+def _fd_file_closed(fileno):
+    try:
+        _fd_file_owners.pop(int(fileno), None)
+    except Exception:
+        pass
+
+
+def _fd_check_foreign(fileno, who):
+    # Called by non-file openers (sockets). If a FileObject still owns this fd
+    # number, the fd was closed out from under it and is being recycled now.
+    try:
+        fileno = int(fileno)
+    except Exception:
+        return
+    prev = _fd_file_owners.get(fileno)
+    if prev is not None:
+        _gevent_debug_log(
+            "FD_REUSE_COLLISION[file->%s]: fd=%d stole_from_file=%r prev_open=%s "
+            "stealer_open=%s proc_fd=%s"
+            % (who, fileno, prev[0], prev[1], _fd_capture_stack(), _fd_readlink(fileno)))
+
+
 def sleep(seconds=0, ref=True):
     """
     Put the current greenlet to sleep for at least *seconds*.

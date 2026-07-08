@@ -298,77 +298,9 @@ if mswindows:
 else:
     import fcntl
     import pickle
-    import ctypes
     from gevent import monkey
-    _original_fork = monkey.get_original('os', 'fork')
+    fork = monkey.get_original('os', 'fork')
     from gevent.os import fork_and_watch
-
-    _libc = ctypes.CDLL(None, use_errno=True)
-    _libc_fork = _libc.fork
-    _libc_fork.restype = ctypes.c_int
-    _PyOS_BeforeFork = ctypes.pythonapi.PyOS_BeforeFork
-    _PyOS_BeforeFork.restype = None
-    _PyOS_BeforeFork.argtypes = []
-    _PyOS_AfterFork_Child = ctypes.pythonapi.PyOS_AfterFork_Child
-    _PyOS_AfterFork_Child.restype = None
-    _PyOS_AfterFork_Child.argtypes = []
-    _PyOS_AfterFork_Parent = ctypes.pythonapi.PyOS_AfterFork_Parent
-    _PyOS_AfterFork_Parent.restype = None
-    _PyOS_AfterFork_Parent.argtypes = []
-
-    def fork():
-        _pre_fds = set()
-        _fd_targets = {}
-        try:
-            _pre_fds = set(int(fd) for fd in os.listdir('/proc/self/fd'))
-            for fd in _pre_fds:
-                try:
-                    _fd_targets[fd] = os.readlink('/proc/self/fd/%d' % fd)
-                except OSError:
-                    _fd_targets[fd] = '?'
-        except Exception:
-            pass
-
-        _PyOS_BeforeFork()
-        pid = _libc_fork()
-
-        if pid == 0:
-            dead_phase1 = []
-            for fd in _pre_fds:
-                if fd < 3:
-                    continue
-                try:
-                    fcntl.fcntl(fd, fcntl.F_GETFD)
-                except OSError:
-                    dead_phase1.append(fd)
-
-            _PyOS_AfterFork_Child()
-
-            dead_phase2 = []
-            for fd in _pre_fds:
-                if fd < 3:
-                    continue
-                if fd in dead_phase1:
-                    continue
-                try:
-                    fcntl.fcntl(fd, fcntl.F_GETFD)
-                except OSError:
-                    dead_phase2.append(fd)
-
-            from gevent.hub import _gevent_debug_log
-            if dead_phase1:
-                for fd in sorted(dead_phase1):
-                    _gevent_debug_log(
-                        "FORK.PHASE1_ATFORK: fd=%d target=%s" % (fd, _fd_targets.get(fd, '?')))
-            if dead_phase2:
-                for fd in sorted(dead_phase2):
-                    _gevent_debug_log(
-                        "FORK.PHASE2_PYTHON: fd=%d target=%s" % (fd, _fd_targets.get(fd, '?')))
-            if not dead_phase1 and not dead_phase2:
-                _gevent_debug_log("FORK.ALL_FDS_ALIVE: count=%d" % len(_pre_fds))
-        else:
-            _PyOS_AfterFork_Parent()
-        return pid
 
 STDOUT = __subprocess__.STDOUT # static analysis
 
@@ -837,8 +769,6 @@ class Popen(object):
          c2pread, c2pwrite,
          errread, errwrite) = self._get_handles(stdin, stdout, stderr)
 
-        self._gc_count_before_wrap = gc.get_count()
-
         # We wrap OS handles *before* launching the child, otherwise a
         # quickly terminating child could make our fds unwrappable
         # (see #8458).
@@ -886,8 +816,6 @@ class Popen(object):
                                          encoding=encoding, errors=errors)
             else:
                 self.stderr = FileObject(errread, 'rb', bufsize)
-
-        self._gc_count_after_wrap = gc.get_count()
 
         self._closed_child_pipe_fds = False
         # Convert here for the sake of all platforms. os.chdir accepts
@@ -1712,26 +1640,6 @@ class Popen(object):
                     # write to stderr -> hang.  http://bugs.python.org/issue1336
                     gc.disable()
                     try:
-                        from gevent.hub import get_hub as _get_hub, _gevent_debug_log
-                        try:
-                            _loop_fd = _get_hub().loop.fileno()
-                        except Exception:
-                            _loop_fd = '?'
-                        _invalid_pre = []
-                        for _pn, _pv in (('p2cread', p2cread), ('p2cwrite', p2cwrite),
-                                         ('c2pread', c2pread), ('c2pwrite', c2pwrite),
-                                         ('errread', errread), ('errwrite', errwrite)):
-                            if _pv != -1:
-                                try:
-                                    fcntl.fcntl(_pv, fcntl.F_GETFD)
-                                except OSError:
-                                    _invalid_pre.append((_pn, _pv))
-                        _gevent_debug_log(
-                            "SUBPROCESS.PRE_FORK: loop_fd=%s pipe_fds=(%d,%d,%d,%d,%d,%d) errpipe=(%d,%d)%s"
-                            % (_loop_fd, p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite,
-                               errpipe_read, errpipe_write,
-                               (' INVALID_BEFORE_FORK=%s' % _invalid_pre) if _invalid_pre else '')
-                        )
                         self.pid = fork_and_watch(self._on_child, self._loop, True, fork)
                     except:
                         if gc_was_enabled:
@@ -1760,72 +1668,34 @@ class Popen(object):
                         # try hard not to call things like malloc(). (Of course,
                         # CPython 2 pretty much did what we're doing.)
                         try:
-                            import fcntl as _child_fcntl
-                            _bad_child_fds = []
-                            for _cn, _cv in (('p2cread', p2cread), ('p2cwrite', p2cwrite),
-                                             ('c2pread', c2pread), ('c2pwrite', c2pwrite),
-                                             ('errread', errread), ('errwrite', errwrite),
-                                             ('errpipe_read', errpipe_read), ('errpipe_write', errpipe_write)):
-                                if _cv != -1:
-                                    try:
-                                        _child_fcntl.fcntl(_cv, _child_fcntl.F_GETFD)
-                                    except OSError:
-                                        _bad_child_fds.append((_cn, _cv))
-                            if _bad_child_fds:
-                                os.write(errpipe_write,
-                                         pickle.dumps(OSError(9, 'CHILD_POST_FORK_INVALID: %s' % _bad_child_fds)))
-                                os._exit(1)
                             # Close parent's pipe ends
-                            for _cfd_name, _cfd in (('p2cwrite', p2cwrite), ('c2pread', c2pread),
-                                                     ('errread', errread)):
-                                if _cfd != -1:
-                                    try:
-                                        os_close(_cfd)
-                                    except OSError as _cfd_err:
-                                        _cfd_err._failed_fd_name = _cfd_name
-                                        _cfd_err._failed_fd_num = _cfd
-                                        raise
-                            try:
-                                os_close(errpipe_read)
-                            except OSError as _cfd_err:
-                                _cfd_err._failed_fd_name = 'errpipe_read'
-                                _cfd_err._failed_fd_num = errpipe_read
-                                raise
+                            if p2cwrite != -1:
+                                os_close(p2cwrite)
+                            if c2pread != -1:
+                                os_close(c2pread)
+                            if errread != -1:
+                                os_close(errread)
+                            os_close(errpipe_read)
 
                             # When duping fds, if there arises a situation
                             # where one of the fds is either 0, 1 or 2, it
                             # is possible that it is overwritten (#12607).
                             if c2pwrite == 0:
-                                try:
-                                    c2pwrite = os.dup(c2pwrite)
-                                except OSError as e:
-                                    e._failed_fd_name = 'dup(c2pwrite)'
-                                    e._failed_fd_num = c2pwrite
-                                    raise
+                                c2pwrite = os.dup(c2pwrite)
                                 _set_inheritable(c2pwrite, False)
                             while errwrite in (0, 1):
-                                try:
-                                    errwrite = os.dup(errwrite)
-                                except OSError as e:
-                                    e._failed_fd_name = 'dup(errwrite)'
-                                    e._failed_fd_num = errwrite
-                                    raise
+                                errwrite = os.dup(errwrite)
                                 _set_inheritable(errwrite, False)
 
                             # Dup fds for child
-                            def _dup2(existing, desired, _name='?'):
+                            def _dup2(existing, desired):
                                 # dup2() removes the CLOEXEC flag but
                                 # we must do it ourselves if dup2()
                                 # would be a no-op (issue #10806).
                                 if existing == desired:
                                     self._set_cloexec_flag(existing, False)
                                 elif existing != -1:
-                                    try:
-                                        os.dup2(existing, desired)
-                                    except OSError as e:
-                                        e._failed_fd_name = 'dup2(%s)' % _name
-                                        e._failed_fd_num = existing
-                                        raise
+                                    os.dup2(existing, desired)
                                 try:
                                     self._remove_nonblock_flag(desired)
                                 except OSError:
@@ -1833,9 +1703,9 @@ class Popen(object):
                                     # open yet.
                                     # Tested beginning in 3.7.0b3 test_subprocess.py
                                     pass
-                            _dup2(p2cread, 0, 'p2cread->0')
-                            _dup2(c2pwrite, 1, 'c2pwrite->1')
-                            _dup2(errwrite, 2, 'errwrite->2')
+                            _dup2(p2cread, 0)
+                            _dup2(c2pwrite, 1)
+                            _dup2(errwrite, 2)
 
                             # Close pipe fds.  Make sure we don't close the
                             # same fd more than once, or standard fds.
@@ -1983,19 +1853,6 @@ class Popen(object):
                         child_exception.filename = cwd
                     if getattr(child_exception, '_failed_chuser', False):
                         child_exception.filename = None
-                    if child_exception.errno == 9:
-                        from gevent.hub import _gevent_debug_log
-                        _gevent_debug_log(
-                            "SUBPROCESS.CHILD_EBADF: fd_name=%s fd_num=%s "
-                            "pipe_fds=(%d,%d,%d,%d,%d,%d) "
-                            "gc_before_wrap=%s gc_after_wrap=%s args=%r"
-                            % (getattr(child_exception, '_failed_fd_name', '?'),
-                               getattr(child_exception, '_failed_fd_num', '?'),
-                               p2cread, p2cwrite, c2pread, c2pwrite, errread, errwrite,
-                               getattr(self, '_gc_count_before_wrap', '?'),
-                               getattr(self, '_gc_count_after_wrap', '?'),
-                               args[:3])
-                        )
                 raise child_exception
 
         def _handle_exitstatus(self, sts, _WIFSIGNALED=os.WIFSIGNALED,

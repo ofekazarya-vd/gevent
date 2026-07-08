@@ -316,62 +316,13 @@ if hasattr(os, 'fork'):
         .. versionadded:: 1.1b2
         """
         import warnings
-        import sys as _sys
-        import fcntl as _fork_fcntl
-        _pre_fork_fds = set()
-        try:
-            _pre_fork_fds = set(int(fd) for fd in _os.listdir('/proc/self/fd'))
-        except Exception:
-            pass
-
+        # The simple `catch_warnings(action='ignore', category=DeprecationWarning)`
+        # is only available in 3.11+.
         with warnings.catch_warnings():
             warnings.simplefilter('ignore', DeprecationWarning)
             result = _raw_fork()
         if not result:
-            # Child: intercept os.close with fork-safe tracing (no imports, no format_stack)
-            _real_close = _os.close
-            _close_traces = {}
-
-            def _tracing_close(fd):
-                # Walk the stack using sys._getframe — fork-safe, no allocations beyond tuples
-                _frames = []
-                try:
-                    f = _sys._getframe(1)
-                    for _ in range(8):
-                        if f is None:
-                            break
-                        _frames.append((f.f_code.co_filename, f.f_lineno, f.f_code.co_name))
-                        f = f.f_back
-                except Exception:
-                    pass
-                _close_traces[fd] = _frames
-                return _real_close(fd)
-
-            _os.close = _tracing_close
-            try:
-                reinit()
-            finally:
-                _os.close = _real_close
-
-            # Check which parent FDs died
-            _dead_fds = []
-            for _fd in _pre_fork_fds:
-                if _fd < 3:
-                    continue
-                try:
-                    _fork_fcntl.fcntl(_fd, _fork_fcntl.F_GETFD)
-                except OSError:
-                    _dead_fds.append(_fd)
-
-            if _dead_fds:
-                from gevent.hub import _gevent_debug_log
-                for _fd in _dead_fds:
-                    _trace = _close_traces.get(_fd)
-                    if _trace:
-                        _trace_str = ' <- '.join('%s:%d:%s' % t for t in _trace)
-                    else:
-                        _trace_str = 'NOT via os.close (C-level)'
-                    _gevent_debug_log("FORK.FD_CLOSED: fd=%d trace=%s" % (_fd, _trace_str))
+            reinit()
         return result
 
     def fork():

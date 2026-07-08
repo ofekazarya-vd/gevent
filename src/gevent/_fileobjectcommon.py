@@ -491,6 +491,13 @@ class FileObjectBase(object):
         # pass it along) for compatibility.
         self._close = descriptor.closefd
         self._do_delegate_methods()
+        # ORION-387413: register this file's fd so we can detect it being
+        # recycled to another owner (e.g. a socket) behind our back.
+        try:
+            from gevent.hub import _fd_file_opened
+            _fd_file_opened(self._io.fileno(), getattr(self._io, 'name', repr(self._io)))
+        except Exception:
+            pass
 
 
     io = property(lambda s: s._io,
@@ -527,6 +534,23 @@ class FileObjectBase(object):
             return
 
         fobj = self._io
+        # ORION-387413: unregister the fd and flag GC-driven (finalizer) closes,
+        # which are a common source of foreign fd closes under gevent.
+        try:
+            from gevent.hub import _fd_file_closed, _gevent_debug_log
+            try:
+                _fileno = fobj.fileno()
+            except Exception:
+                _fileno = -1
+            _caller = sys._getframe(1).f_code.co_name
+            if _caller in ('__del__', '_do_close_uninitialized', 'tp_dealloc'):
+                _gevent_debug_log(
+                    "FILEOBJ_GC_CLOSE: fd=%s name=%r type=%s"
+                    % (_fileno, getattr(fobj, 'name', '?'), type(self).__name__))
+            _fd_file_closed(_fileno)
+        except Exception:
+            pass
+
         self._io = _ClosedIO(self._io)
         try:
             self._do_close(fobj, self._close)
@@ -642,9 +666,19 @@ class FileObjectThread(FileObjectBase):
 
     def _do_close(self, fobj, closefd):
         self.__io_holder[0] = None # for _wrap_method
+        # ORION-387413: capture the fd up front so failure logs can show which
+        # descriptor faulted and what it currently points to in /proc/self/fd.
+        try:
+            _fileno = fobj.fileno()
+        except Exception:
+            _fileno = -1
         try:
             with self.lock:
-                self.threadpool.apply(fobj.flush)
+                try:
+                    self.threadpool.apply(fobj.flush)
+                except BaseException as _exc:
+                    self._orion387413_report('FLUSH', _fileno, fobj, _exc)
+                    raise
         finally:
             if closefd:
                 # Note that we're not taking the lock; older code
@@ -668,7 +702,21 @@ class FileObjectThread(FileObjectBase):
                 del close
 
                 if exc_info:
+                    self._orion387413_report('CLOSE', _fileno, None, exc_info[1])
                     reraise(*exc_info)
+
+    @staticmethod
+    def _orion387413_report(phase, fileno, fobj, exc):
+        # Emit fd-level context when flush/close fails. If proc_fd shows a
+        # socket for what should be a regular file, the fd-reuse is proven.
+        try:
+            from gevent.hub import _gevent_debug_log, _fd_readlink, _fd_file_owners
+            _gevent_debug_log(
+                "FILEOBJ_%s_FAIL: fd=%s name=%r exc=%r proc_fd=%s registry_owner=%r"
+                % (phase, fileno, getattr(fobj, 'name', '?'), exc,
+                   _fd_readlink(fileno), _fd_file_owners.get(fileno)))
+        except Exception:
+            pass
 
     def _do_delegate_methods(self):
         FileObjectBase._do_delegate_methods(self)

@@ -128,6 +128,13 @@ class socket(_socketcommon.SocketMixin):
         self._io_refs = 0
         _socket.socket.setblocking(self._sock, False)
         fileno = _socket.socket.fileno(self._sock)
+        # ORION-387413: if a FileObject still owns this fd number, this socket
+        # just grabbed a descriptor that was closed out from under a file.
+        try:
+            from gevent.hub import _fd_check_foreign
+            _fd_check_foreign(fileno, 'socket')
+        except Exception:
+            pass
         self.hub = get_hub()
         io_class = self.hub.loop.io
         self._read_event = io_class(fileno, 1)
