@@ -172,7 +172,59 @@ def _fd_readlink(fileno):
         return '?'
 
 
+def _fd_foreign_close(fileno, op):
+    # A raw os.close/os.dup2 is about to free an fd a FileObject still owns.
+    # This names the exact frame closing the descriptor behind our back.
+    try:
+        fileno = int(fileno)
+    except Exception:
+        return
+    prev = _fd_file_owners.get(fileno)
+    if prev is not None:
+        _gevent_debug_log(
+            "FD_FOREIGN_CLOSE[%s]: fd=%d owner_file=%r owner_open=%s closer=%s proc_fd=%s"
+            % (op, fileno, prev[0], prev[1], _fd_capture_stack(3), _fd_readlink(fileno)))
+
+
+_fd_close_tracer_installed = [False]
+
+
+def _fd_install_close_tracer():
+    # Wrap os.close / os.dup2 once so foreign closes of FileObject-owned fds are
+    # traced. dup2 is included because it implicitly closes its target fd.
+    if _fd_close_tracer_installed[0]:
+        return
+    _fd_close_tracer_installed[0] = True
+    try:
+        import os as _os
+        _real_close = _os.close
+        _real_dup2 = _os.dup2
+
+        def _traced_close(fd, _rc=_real_close):
+            try:
+                if int(fd) in _fd_file_owners:
+                    _fd_foreign_close(fd, 'os.close')
+            except Exception:
+                pass
+            return _rc(fd)
+
+        def _traced_dup2(fd, fd2, *args, **kwargs):
+            try:
+                if int(fd2) in _fd_file_owners:
+                    _fd_foreign_close(fd2, 'os.dup2')
+            except Exception:
+                pass
+            return _real_dup2(fd, fd2, *args, **kwargs)
+
+        _os.close = _traced_close
+        _os.dup2 = _traced_dup2
+        _gevent_debug_log("FD_CLOSE_TRACER: installed (os.close/os.dup2 wrapped)")
+    except Exception:
+        pass
+
+
 def _fd_file_opened(fileno, name):
+    _fd_install_close_tracer()
     try:
         fileno = int(fileno)
     except Exception:
