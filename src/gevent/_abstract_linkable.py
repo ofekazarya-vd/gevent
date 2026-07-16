@@ -238,7 +238,7 @@ class AbstractLinkable(object):
                     "OFEKA_LOGS check_and_notify NO-HUB direct-notify lock=0x%x (%s) name=%s invalid_thread=%s links=%d glet=%r"
                     % (id(self), type(self).__name__, _name, _invalid_thread,
                        len(self._links), getcurrent()))
-                if _name == 'global_shutdown':
+                if _invalid_thread:
                     import traceback as _traceback
                     _gevent_debug_log(
                         "OFEKA_LOGS check_and_notify NO-HUB direct-notify STACK name=%s invalid_thread=%s glet=%r:\n%sOFEKA_LOGS STACK-END"

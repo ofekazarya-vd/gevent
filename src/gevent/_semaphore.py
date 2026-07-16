@@ -325,7 +325,7 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
             "OFEKA_LOGS acquire-from-other-thread lock=0x%x (%s) name=%s reason=%s blocking=%s timeout=%s glet=%r"
             % (id(self), type(self).__name__, _name,
                _reason, blocking, timeout, self._getcurrent()))
-        if _name == 'global_shutdown':
+        if _reason == 'InvalidThreadUse':
             import traceback as _traceback
             _gevent_debug_log(
                 "OFEKA_LOGS acquire-from-other-thread STACK name=%s reason=%s glet=%r:\n%sOFEKA_LOGS STACK-END"
