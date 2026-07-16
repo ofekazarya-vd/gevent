@@ -217,6 +217,7 @@ class AbstractLinkable(object):
         # If this object is ready to be notified, begin the process.
         if self.ready() and self._links and not self._notifier:
             hub = None
+            _invalid_thread = False
             try:
                 hub = self._capture_hub(False) # Must create, we need it.
             except InvalidThreadUseError:
@@ -224,6 +225,7 @@ class AbstractLinkable(object):
                 # we still want to start the notifier in the thread running
                 # self.hub (because the links probably contains greenlet.switch
                 # calls valid only in that hub)
+                _invalid_thread = True
                 pass
             if hub is not None:
                 self._notifier = hub.loop.run_callback(self._notify_links, [])
@@ -231,10 +233,16 @@ class AbstractLinkable(object):
                 # Hmm, no hub. We must be the only thing running. Then its OK
                 # to just directly call the callbacks.
                 from gevent.hub import _gevent_debug_log
+                _name = getattr(self, '_vast_name', '?')
                 _gevent_debug_log(
-                    "OFEKA_LOGS check_and_notify NO-HUB direct-notify lock=0x%x (%s) name=%s links=%d glet=%r"
-                    % (id(self), type(self).__name__, getattr(self, '_vast_name', '?'),
+                    "OFEKA_LOGS check_and_notify NO-HUB direct-notify lock=0x%x (%s) name=%s invalid_thread=%s links=%d glet=%r"
+                    % (id(self), type(self).__name__, _name, _invalid_thread,
                        len(self._links), getcurrent()))
+                if _name == 'global_shutdown':
+                    import traceback as _traceback
+                    _gevent_debug_log(
+                        "OFEKA_LOGS check_and_notify NO-HUB direct-notify STACK name=%s invalid_thread=%s glet=%r:\n%sOFEKA_LOGS STACK-END"
+                        % (_name, _invalid_thread, getcurrent(), "".join(_traceback.format_stack())))
                 self._notifier = 1
                 try:
                     self._notify_links([])
