@@ -50,16 +50,38 @@ class WaitOperationsGreenlet(SwitchOutGreenletWithLoop): # pylint:disable=undefi
         The current greenlet will be unscheduled during this time.
         """
         waiter = Waiter(self) # pylint:disable=undefined-variable
+        # Cheap breadcrumb only: this is the hot path for every socket
+        # operation, so no repr() and no stack formatting here. It lets a
+        # stray waiter surfacing in some other greenlet's wait() be traced
+        # back to the watcher and greenlet that armed it.
+        waiter._dbg_origin = (
+            type(watcher).__name__, getattr(watcher, 'fd', -1), id(watcher),
+            id(getcurrent()), # pylint:disable=undefined-variable
+        )
         watcher.start(waiter.switch, waiter)
         try:
             result = waiter.get()
             if result is not waiter:
                 from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "HUB.WAIT InvalidSwitch (returning early): got %r expected waiter=0x%x watcher=%r greenlet=%r\n%s"
-                    % (result, id(waiter), watcher, getcurrent(), # pylint:disable=undefined-variable
-                        ''.join(traceback.format_stack()))
-                )
+                from gevent.hub import _gevent_debug_stacks
+                # Must not mask the InvalidSwitchError we are about to raise.
+                try:
+                    _owner = getattr(result, 'greenlet', None)
+                    _gevent_debug_log(
+                        "OFEKA_LOGS HUB.WAIT InvalidSwitch (returning early): hub=%r "
+                        "hub_thread=%s watcher=%r expected_waiter=0x%x glet=%r\n"
+                        "OFEKA_LOGS HUB.WAIT got=%r type=%s id=0x%x got_greenlet=%r "
+                        "got_hub=%r origin=%r"
+                        % (self, getattr(self, 'thread_ident', '?'), watcher,
+                           id(waiter),
+                           getcurrent(), # pylint:disable=undefined-variable
+                           result, type(result).__name__, id(result), _owner,
+                           getattr(result, 'hub', '<n/a>'),
+                           getattr(result, '_dbg_origin', None))
+                    )
+                    _gevent_debug_stacks('HUB.WAIT', (('got_greenlet', _owner),))
+                except Exception as _ex: # pylint:disable=broad-except
+                    _gevent_debug_log("OFEKA_LOGS HUB.WAIT LOG-FAILED %r" % (_ex,))
 
                 raise InvalidSwitchError(
                     'Invalid switch into %s: got %r (expected %r; waiting on %r with %r)' % (

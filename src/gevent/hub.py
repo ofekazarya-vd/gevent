@@ -137,6 +137,35 @@ def _gevent_debug_log(msg):
         pass
 
 
+def _gevent_debug_stacks(tag, greenlets=()):
+    """
+    Emit one atomic OFEKA_LOGS block holding the calling greenlet's stack
+    followed by a stack for each ``(label, greenlet)`` pair in *greenlets*.
+
+    Other greenlets are unwound from ``gr_frame``, the frame they are parked
+    on, so the block shows where each one is currently blocked. A greenlet
+    that is running, dead, or not yet started has no such frame and
+    contributes only its repr.
+    """
+    try:
+        import traceback as _traceback
+        from greenlet import getcurrent as _getcurrent
+        parts = ["OFEKA_LOGS %s STACK current=%r:\n" % (tag, _getcurrent())]
+        parts.extend(_traceback.format_stack())
+        for label, glet in greenlets:
+            parts.append(
+                "OFEKA_LOGS %s STACK %s=%r dead=%s:\n"
+                % (tag, label, glet, getattr(glet, 'dead', '?'))
+            )
+            frame = getattr(glet, 'gr_frame', None)
+            if frame is not None:
+                parts.extend(_traceback.format_stack(frame))
+        parts.append("OFEKA_LOGS %s STACK-END" % (tag,))
+        _gevent_debug_log("".join(parts))
+    except Exception as ex: # pylint:disable=broad-except
+        _gevent_debug_log("OFEKA_LOGS %s STACK-FAILED %r" % (tag, ex))
+
+
 def sleep(seconds=0, ref=True):
     """
     Put the current greenlet to sleep for at least *seconds*.

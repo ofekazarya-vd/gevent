@@ -487,6 +487,27 @@ class AbstractLinkable(object):
                 the_hub = get_hub()
             else:
                 the_hub = self.hub
+                if the_hub.thread_ident != _get_thread_ident():
+                    from gevent.hub import _gevent_debug_log
+                    from gevent.hub import _gevent_debug_stacks
+                    # This sits on a working wait path, so a formatting
+                    # failure must never propagate.
+                    try:
+                        _gevent_debug_log(
+                            "OFEKA_LOGS CROSS_THREAD_PARK lock=0x%x (%s) name=%s rawlink=%s links=%d\n"
+                            "OFEKA_LOGS CROSS_THREAD_PARK lock_hub=%r hub_thread=%s cur_hub=%r "
+                            "cur_thread=%s glet=%r"
+                            % (id(self), type(self).__name__,
+                               getattr(self, '_vast_name', '?'), rawlink,
+                               len(self._links) if self._links else 0,
+                               the_hub, the_hub.thread_ident, get_hub_if_exists(),
+                               _get_thread_ident(),
+                               getcurrent()) # pylint:disable=undefined-variable
+                        )
+                        _gevent_debug_stacks('CROSS_THREAD_PARK')
+                    except Exception as _ex: # pylint:disable=broad-except
+                        _gevent_debug_log(
+                            "OFEKA_LOGS CROSS_THREAD_PARK LOG-FAILED %r" % (_ex,))
             self._switch_to_hub(the_hub)
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None
@@ -500,6 +521,33 @@ class AbstractLinkable(object):
         finally:
             self._acquire_lock_for_switch_in()
         if result is not self: # pragma: no cover
+            from gevent.hub import _gevent_debug_log
+            from gevent.hub import _gevent_debug_stacks
+            # Must not mask the InvalidSwitchError we are about to raise.
+            try:
+                _owner = getattr(result, 'greenlet', None)
+                _ready = getattr(result, 'ready', None)
+                _gevent_debug_log(
+                    "OFEKA_LOGS INVALID_SWITCH lock=0x%x (%s) name=%s links=%d\n"
+                    "OFEKA_LOGS INVALID_SWITCH lock_hub=%r switched_hub=%r cur_hub=%r "
+                    "glet=%r cur_thread=%s hub_thread=%s\n"
+                    "OFEKA_LOGS INVALID_SWITCH got=%r type=%s id=0x%x got_greenlet=%r "
+                    "got_hub=%r got_ready=%s origin=%r"
+                    % (
+                        id(self), type(self).__name__, getattr(self, '_vast_name', '?'),
+                        len(self._links) if self._links else 0,
+                        self.hub, the_hub, get_hub_if_exists(),
+                        getcurrent(), # pylint:disable=undefined-variable
+                        _get_thread_ident(), getattr(the_hub, 'thread_ident', '?'),
+                        result, type(result).__name__, id(result), _owner,
+                        getattr(result, 'hub', '<n/a>'),
+                        _ready() if _ready is not None else '<n/a>',
+                        getattr(result, '_dbg_origin', None),
+                    )
+                )
+                _gevent_debug_stacks('INVALID_SWITCH', (('got_greenlet', _owner),))
+            except Exception as _ex: # pylint:disable=broad-except
+                _gevent_debug_log("OFEKA_LOGS INVALID_SWITCH LOG-FAILED %r" % (_ex,))
             raise InvalidSwitchError(
                 'Invalid switch into %s.wait(): %r' % (
                     self.__class__.__name__,

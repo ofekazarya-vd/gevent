@@ -35,6 +35,7 @@ cdef class Waiter:
     cdef readonly greenlet greenlet
     cdef readonly value
     cdef _exception
+    cdef public _dbg_origin
 
     cpdef get(self)
     cpdef clear(self)

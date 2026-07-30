@@ -68,18 +68,20 @@ class Waiter(object):
         or :class:`gevent.queue.Queue`.
     """
 
-    __slots__ = ['hub', 'greenlet', 'value', '_exception']
+    __slots__ = ['hub', 'greenlet', 'value', '_exception', '_dbg_origin']
 
     def __init__(self, hub=None):
         self.hub = get_hub() if hub is None else hub
         self.greenlet = None
         self.value = None
         self._exception = _NONE
+        self._dbg_origin = None
 
     def clear(self):
         self.greenlet = None
         self.value = None
         self._exception = _NONE
+        self._dbg_origin = None
 
     def __str__(self):
         if self._exception is _NONE:
