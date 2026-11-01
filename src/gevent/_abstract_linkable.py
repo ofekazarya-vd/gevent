@@ -165,7 +165,11 @@ class AbstractLinkable(object):
             # we don't want to change it; it needs to finish what its doing
             # so we don't attempt to start a fresh one or swap it out from underneath the
             # _notify_links method.
-            self._notifier.stop()
+            # Greenlets that called wait() while the notifier was queued are parked
+            # only in its args[0], with no timeout; stopping it would lose them forever.
+            if not self._notifier.args[0]:
+                self._notifier.stop()
+                self._notifier = None
 
     def _allocate_lock(self):
         return _allocate_thread_lock()

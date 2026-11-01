@@ -440,6 +440,20 @@ class TestEventBasics(greentest.TestCase):
         result = gevent.wait([event])
         self.assertEqual(result, [event])
 
+    def test_wait_on_queued_notifier_survives_last_unlink(self):
+        # A wait() on a set Event whose notifier is queued but has not run yet
+        # parks on the notifier's arrival list. If the last rawlink is then
+        # removed (e.g. its wait() timed out) before the notifier runs, the
+        # parked waiter must still be woken.
+        event = Event()
+        link = lambda _: None
+        event.rawlink(link)
+        gevent.get_hub().loop.run_callback(event.unlink, link)
+        event.set()
+        with gevent.Timeout(SMALL_TICK_MAX_ADJ * 10, AssertionError('lost wakeup')):
+            self.assertTrue(event.wait())
+        self.assertEqual(0, event.linkcount())
+
 
 del AbstractGenericGetTestCase
 del AbstractGenericWaitTestCase
