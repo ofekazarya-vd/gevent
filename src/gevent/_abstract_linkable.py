@@ -42,6 +42,15 @@ _allocate_thread_lock = __import__(thread_mod_name).allocate_lock
 _STALL_REPORT_FIRST = 60.0
 _STALL_REPORT_MAX = 900.0
 
+_debug_report_counts = {}
+
+def _debug_report_number(kind, limit):
+    # These reports sit on paths shared by every event and lock. Cap each kind so a
+    # condition that turns out to be common cannot flood stderr; 0 means suppressed.
+    count = _debug_report_counts.get(kind, 0) + 1
+    _debug_report_counts[kind] = count
+    return count if count <= limit else 0
+
 class _FakeNotifier(object):
     __slots__ = (
         'pending',
@@ -296,12 +305,14 @@ class AbstractLinkable(object):
                         import traceback
                         traceback.print_exc()
             else:
-                from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "NOTIFY_LINK skipped link whose id was already notified (a duplicate, or a reused id "
-                    "that drops a waiter): self=0x%x (%s) link=%r"
-                    % (id(self), type(self).__name__, link)
-                )
+                report = _debug_report_number('NOTIFY_LINK skipped', 20)
+                if report:
+                    from gevent.hub import _gevent_debug_log
+                    _gevent_debug_log(
+                        "NOTIFY_LINK skipped link whose id was already notified (a duplicate, or a reused id "
+                        "that drops a waiter) [report %d/20]: self=0x%x (%s) link=%r"
+                        % (report, id(self), type(self).__name__, link)
+                    )
 
             if link is final_link:
                 break
@@ -325,11 +336,15 @@ class AbstractLinkable(object):
         if notifier is None:
             # XXX: How did we get here?
             if arrived_while_waiting:
-                from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "NOTIFY_LINKS ran without a notifier, dropping %d arrived waiters: self=0x%x (%s) %r"
-                    % (len(arrived_while_waiting), id(self), type(self).__name__, arrived_while_waiting)
-                )
+                report = _debug_report_number('NOTIFY_LINKS without notifier', 20)
+                if report:
+                    from gevent.hub import _gevent_debug_log
+                    _gevent_debug_log(
+                        "NOTIFY_LINKS ran without a notifier, dropping %d arrived waiters [report %d/20]: "
+                        "self=0x%x (%s) %r"
+                        % (len(arrived_while_waiting), report, id(self), type(self).__name__,
+                           arrived_while_waiting)
+                    )
             self._check_and_notify()
             return
         # Early links are allowed to remove later links, and links
@@ -363,11 +378,14 @@ class AbstractLinkable(object):
             # which invokes ``_at_fork_reinit`` and destroys the notifier and
             # hub *while this method is running*.
             if not (self._notifier is notifier or (self._notifier is None and self.hub is None)):
-                from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "NOTIFY_LINKS notifier replaced while notifying: self=0x%x (%s) was=%r now=%r hub=%r"
-                    % (id(self), type(self).__name__, notifier, self._notifier, self.hub)
-                )
+                report = _debug_report_number('NOTIFY_LINKS notifier replaced', 20)
+                if report:
+                    from gevent.hub import _gevent_debug_log
+                    _gevent_debug_log(
+                        "NOTIFY_LINKS notifier replaced while notifying [report %d/20]: self=0x%x (%s) "
+                        "was=%r now=%r hub=%r"
+                        % (report, id(self), type(self).__name__, notifier, self._notifier, self.hub)
+                    )
             assert self._notifier is notifier or (
                 self._notifier is None and self.hub is None
             ), (self, self._notifier, notifier)
@@ -471,7 +489,7 @@ class AbstractLinkable(object):
             except ValueError:
                 pass
 
-    def __wait_to_be_notified(self, rawlink, report_stalls): # pylint:disable=too-many-branches
+    def __wait_to_be_notified(self, rawlink): # pylint:disable=too-many-branches
         resume_this_greenlet = getcurrent().switch # pylint:disable=undefined-variable
         parked_notifier = None
         if rawlink:
@@ -489,19 +507,19 @@ class AbstractLinkable(object):
                 the_hub = get_hub()
             else:
                 the_hub = self.hub
-            if report_stalls:
-                self._switch_to_hub_reporting_stalls(the_hub, rawlink, parked_notifier, resume_this_greenlet)
-            else:
+            if parked_notifier is None:
                 self._switch_to_hub(the_hub)
+            else:
+                self._switch_to_hub_reporting_stalls(the_hub, parked_notifier, resume_this_greenlet)
             # If we got here, we were automatically unlinked already.
             resume_this_greenlet = None
         finally:
             self._quiet_unlink_all(resume_this_greenlet)
 
-    def _switch_to_hub_reporting_stalls(self, the_hub, rawlink, parked_notifier, resume_this_greenlet):
-        # Same as _switch_to_hub, but wakes up periodically to report a waiter that should
-        # already have been notified. The waiter stays linked/parked throughout, so the
-        # outcome of the wait is unchanged.
+    def _switch_to_hub_reporting_stalls(self, the_hub, parked_notifier, resume_this_greenlet):
+        # Same as _switch_to_hub for a waiter parked on a pending notifier's list, which has
+        # no timeout of its own and is normally resumed within one loop iteration. Wakes up
+        # periodically to report it; it stays parked throughout, so the outcome is unchanged.
         from time import monotonic
         parked_at = monotonic()
         interval = _STALL_REPORT_FIRST
@@ -515,42 +533,36 @@ class AbstractLinkable(object):
                 except Timeout as ex:
                     if ex is not watchdog:
                         raise
-            # A parked arrival was ready when it parked, so any stall is abnormal; a linked
-            # waiter is only abnormal if the object is ready and it still was not woken.
-            if not rawlink or self.ready():
-                self._report_stall(the_hub, rawlink, parked_notifier, resume_this_greenlet,
-                                   monotonic() - parked_at)
+            report = _debug_report_number('STALLED WAITER', 50)
+            if report:
+                self._report_stall(the_hub, parked_notifier, resume_this_greenlet,
+                                   monotonic() - parked_at, report)
             interval = min(interval * 2, _STALL_REPORT_MAX)
 
-    def _report_stall(self, the_hub, rawlink, parked_notifier, resume_this_greenlet, waited):
+    def _report_stall(self, the_hub, parked_notifier, resume_this_greenlet, waited, report):
         import traceback
         from gevent.hub import _gevent_debug_log
         try:
             notifier = self._notifier
-            if rawlink:
-                verdict = ("LINKED WAITER NOT WOKEN: the object is ready but its notifier never "
-                           "switched to this waiter")
-                waiter_list = self._links
+            parked_args = getattr(parked_notifier, 'args', None)
+            waiter_list = parked_args[0] if parked_args else None
+            if notifier is not parked_notifier:
+                verdict = ("LOST WAKEUP: the notifier this waiter parked on is no longer the "
+                           "object's notifier and never switched to this waiter")
+            elif getattr(notifier, 'pending', None):
+                verdict = "NOTIFIER NEVER RAN: still scheduled on its loop but not run"
+            elif notifier:
+                verdict = ("NOTIFIER NEVER FINISHED: started running but did not complete, "
+                           "so the object keeps a stale notifier")
             else:
-                parked_args = getattr(parked_notifier, 'args', None)
-                waiter_list = parked_args[0] if parked_args else None
-                if notifier is not parked_notifier:
-                    verdict = ("LOST WAKEUP: the notifier this waiter parked on is no longer the "
-                               "object's notifier and never switched to this waiter")
-                elif getattr(notifier, 'pending', None):
-                    verdict = "NOTIFIER NEVER RAN: still scheduled on its loop but not run"
-                elif notifier:
-                    verdict = ("NOTIFIER NEVER FINISHED: started running but did not complete, "
-                               "so the object keeps a stale notifier")
-                else:
-                    verdict = "NOTIFIER FINISHED WITHOUT SWITCHING TO THIS WAITER"
+                verdict = "NOTIFIER FINISHED WITHOUT SWITCHING TO THIS WAITER"
 
             hub = self.hub
             loop = getattr(the_hub, 'loop', None)
             _gevent_debug_log(
-                "STALLED WAITER %.1fs on %s 0x%x (%s): %s\n"
+                "STALLED WAITER %.1fs on %s 0x%x [report %d/50]: %s\n"
                 "  object: %r ready=%s links=%d notify_all=%s\n"
-                "  waiter: greenlet=%r path=%s in_waiter_list=%s waiter_list_len=%s\n"
+                "  waiter: greenlet=%r in_parked_list=%s parked_list_len=%s\n"
                 "  parked_notifier=%r pending=%s truthy=%s\n"
                 "  current_notifier=%r same_as_parked=%s\n"
                 "  object_hub=%r object_hub_thread=%s object_hub_dead=%s\n"
@@ -558,9 +570,9 @@ class AbstractLinkable(object):
                 "  loop=%r pendingcnt=%s activecnt=%s\n"
                 "  waiter stack:\n%s"
                 % (
-                    waited, type(self).__name__, id(self), "linked" if rawlink else "parked", verdict,
+                    waited, type(self).__name__, id(self), report, verdict,
                     self, self.ready(), len(self._links), self._notify_all,
-                    getcurrent(), "rawlink" if rawlink else "arrived_while_notifying", # pylint:disable=undefined-variable
+                    getcurrent(), # pylint:disable=undefined-variable
                     waiter_list is not None and resume_this_greenlet in waiter_list,
                     len(waiter_list) if waiter_list is not None else None,
                     parked_notifier, getattr(parked_notifier, 'pending', None), bool(parked_notifier),
@@ -619,7 +631,6 @@ class AbstractLinkable(object):
             try:
                 self.__wait_to_be_notified(
                     True,# Use rawlink()
-                    timeout is None,
                 )
                 return True
             except catch as ex:
@@ -645,7 +656,7 @@ class AbstractLinkable(object):
                 # We're already notifying waiters; one of them must have run
                 # and switched to this greenlet, which arrived here. Alternately,
                 # we could be in a separate thread (but we're holding the GIL/object lock)
-                self.__wait_to_be_notified(False, True) # Use self._notifier.args[0] instead of self.rawlink
+                self.__wait_to_be_notified(False) # Use self._notifier.args[0] instead of self.rawlink
 
             return result
 

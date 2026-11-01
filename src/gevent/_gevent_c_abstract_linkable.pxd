@@ -58,7 +58,7 @@ cdef class AbstractLinkable(object):
 
    cdef _check_and_notify(self)
    cdef SwitchOutGreenletWithLoop _capture_hub(self, bint create)
-   cdef __wait_to_be_notified(self, bint rawlink, bint report_stalls)
+   cdef __wait_to_be_notified(self, bint rawlink)
 
    cdef void _quiet_unlink_all(self, obj) # suppress exceptions
    cdef int _switch_to_hub(self, the_hub) except -1
