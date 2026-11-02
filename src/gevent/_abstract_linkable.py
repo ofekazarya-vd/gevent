@@ -51,6 +51,86 @@ def _debug_report_number(kind, limit):
     _debug_report_counts[kind] = count
     return count if count <= limit else 0
 
+# This module is imported while monkey-patching, which happens on the main thread.
+_MAIN_THREAD_IDENT = _get_thread_ident()
+
+_DEBUG_KNOWN_OBJECTS = (
+    ('concurrent.futures.thread', '_global_shutdown_lock'),
+    ('threading', '_shutdown_locks_lock'),
+    ('logging', '_lock'),
+)
+
+def _debug_known_name(obj):
+    for module_name, attr in _DEBUG_KNOWN_OBJECTS:
+        module = sys.modules.get(module_name)
+        if module is not None and getattr(module, attr, None) is obj:
+            return '%s.%s' % (module_name, attr)
+    return None
+
+def _debug_thread(ident):
+    return '0x%x' % ident if ident else ident
+
+def _debug_greenlet_hub(glet):
+    while glet is not None:
+        # Greenlet also has a loop attribute; only a hub knows its thread.
+        if hasattr(glet, 'thread_ident'):
+            return glet
+        glet = getattr(glet, 'parent', None)
+    return None
+
+def _debug_describe_greenlet(glet):
+    if glet is None:
+        return 'None'
+    import traceback
+    frame = getattr(glet, 'gr_frame', None)
+    top = ''
+    if frame is not None:
+        top = ' <- '.join(
+            '%s:%s %s' % (entry.filename, entry.lineno, entry.name)
+            for entry in reversed(traceback.extract_stack(frame, limit=4))
+        )
+    hub = _debug_greenlet_hub(glet)
+    return '%r dead=%s hub_thread=%s top=[%s]' % (
+        glet, getattr(glet, 'dead', '?'), _debug_thread(getattr(hub, 'thread_ident', None)), top)
+
+def _debug_describe_link(link):
+    glet = getattr(link, '__self__', None)
+    if glet is not None and hasattr(glet, 'gr_frame'):
+        return 'switch of ' + _debug_describe_greenlet(glet)
+    return repr(link)
+
+def _debug_link_hub_threads(links):
+    threads = set()
+    for link in links:
+        hub = _debug_greenlet_hub(getattr(link, '__self__', None))
+        if hub is not None:
+            threads.add(getattr(hub, 'thread_ident', None))
+    return threads
+
+def _debug_referrers(obj, limit=8):
+    # Full heap scans: only for one-off reports, never per wait.
+    import gc
+    import types
+    lines = []
+    dict_scans = 0
+    for ref in gc.get_referrers(obj):
+        if len(lines) >= limit:
+            break
+        if isinstance(ref, types.FrameType):
+            continue
+        if isinstance(ref, dict) and dict_scans < 3:
+            dict_scans += 1
+            keys = [k for k, v in ref.items() if v is obj][:3]
+            owners = [
+                getattr(owner, '__name__', None) or '%s 0x%x' % (type(owner).__name__, id(owner))
+                for owner in gc.get_referrers(ref)
+                if getattr(owner, '__dict__', None) is ref
+            ][:2]
+            lines.append('    dict keys=%r owned by %s' % (keys, owners))
+        else:
+            lines.append('    %s 0x%x' % (type(ref).__name__, id(ref)))
+    return '\n'.join(lines)
+
 class _FakeNotifier(object):
     __slots__ = (
         'pending',
@@ -231,6 +311,7 @@ class AbstractLinkable(object):
         # If this object is ready to be notified, begin the process.
         if self.ready() and self._links and not self._notifier:
             hub = None
+            foreign_thread = False
             try:
                 hub = self._capture_hub(False) # Must create, we need it.
             except InvalidThreadUseError:
@@ -238,10 +319,17 @@ class AbstractLinkable(object):
                 # we still want to start the notifier in the thread running
                 # self.hub (because the links probably contains greenlet.switch
                 # calls valid only in that hub)
-                pass
+                foreign_thread = True
             if hub is not None:
+                if hub.thread_ident != _MAIN_THREAD_IDENT:
+                    self._debug_report_notifier_on_foreign_loop(hub)
                 self._notifier = hub.loop.run_callback(self._notify_links, [])
             else:
+                if foreign_thread or _get_thread_ident() != _MAIN_THREAD_IDENT:
+                    self._debug_report(
+                        'CROSS-THREAD NOTIFY', 20,
+                        'notifying links directly from a thread that does not own the object '
+                        '(owner hub belongs to another thread=%s)', (foreign_thread,))
                 # Hmm, no hub. We must be the only thing running. Then its OK
                 # to just directly call the callbacks.
                 self._notifier = 1
@@ -488,6 +576,14 @@ class AbstractLinkable(object):
                 self._notifier.args[0].remove(obj)
             except ValueError:
                 pass
+        # A link left behind here is later called as a switch into whatever this
+        # greenlet is waiting on by then, which raises InvalidSwitchError there.
+        if obj in self._links or (
+                self._notifier is not None and self._notifier.args and obj in self._notifier.args[0]):
+            self._debug_report(
+                'STALE LINK', 20,
+                'waiter left without being notified but its link is still registered '
+                '(it was linked more than once)', probe=obj)
 
     def __wait_to_be_notified(self, rawlink): # pylint:disable=too-many-branches
         resume_this_greenlet = getcurrent().switch # pylint:disable=undefined-variable
@@ -500,10 +596,10 @@ class AbstractLinkable(object):
 
         try:
             if self.hub is None:
-                from gevent.hub import _gevent_debug_log
-                _gevent_debug_log(
-                    "__wait_to_be_notified called, hub is None"
-                )
+                self._debug_report(
+                    'WAIT WITHOUT HUB', 20,
+                    "__wait_to_be_notified called, hub is None: the object dropped the hub _wait() "
+                    "captured, so this waiter parks on this thread's hub instead", probe=resume_this_greenlet)
                 the_hub = get_hub()
             else:
                 the_hub = self.hub
@@ -587,6 +683,110 @@ class AbstractLinkable(object):
             _gevent_debug_log("STALLED WAITER %.1fs on 0x%x: failed to describe it\n%s"
                               % (waited, id(self), traceback.format_exc()))
 
+    def _debug_describe(self, probe=None):
+        """
+        Multi-line description of this object's wakeup state, for diagnostics only.
+        *probe* is a link to look for among the registered and parked links.
+        """
+        try:
+            hub = self.hub
+            links = list(self._links)
+            notifier = self._notifier
+            notifier_args = getattr(notifier, 'args', None)
+            parked = notifier_args[0] if notifier_args else None
+            known = _debug_known_name(self)
+            lines = [
+                '%s 0x%x%s ready=%s counter=%s notify_all=%s' % (
+                    type(self).__name__, id(self), ' (%s)' % known if known else '',
+                    self.ready(), getattr(self, 'counter', None), self._notify_all),
+                'hub=%r hub_thread=%s hub_is_main=%s hub_dead=%s' % (
+                    hub, _debug_thread(getattr(hub, 'thread_ident', None)),
+                    getattr(hub, 'thread_ident', None) == _MAIN_THREAD_IDENT, getattr(hub, 'dead', None)),
+                'notifier=%r pending=%s truthy=%s parked=%s' % (
+                    notifier, getattr(notifier, 'pending', None), bool(notifier),
+                    len(parked) if parked is not None else None),
+                'links=%d probe_in_links=%s probe_in_parked=%s' % (
+                    len(links),
+                    probe is not None and probe in links,
+                    probe is not None and parked is not None and probe in parked),
+            ]
+            if hasattr(self, '_owner_greenlet'):
+                lines.append('owner=%s' % _debug_describe_greenlet(self._owner_greenlet))
+            for i, link in enumerate(links[:6]):
+                lines.append('link[%d]: %s' % (i, _debug_describe_link(link)))
+            for i, link in enumerate((parked or [])[:6]):
+                lines.append('parked[%d]: %s' % (i, _debug_describe_link(link)))
+            return '\n'.join(lines)
+        except Exception: # pylint:disable=broad-except
+            import traceback
+            return 'failed to describe 0x%x:\n%s' % (id(self), traceback.format_exc())
+
+    def _debug_report(self, kind, limit, message, args=(), probe=None):
+        # *message* is %-formatted with *args* only once the report is allowed, so
+        # callers on shared paths pay nothing after the cap is reached.
+        report = _debug_report_number(kind, limit)
+        if not report:
+            return
+        import traceback
+        from gevent.hub import _gevent_debug_log
+        try:
+            if args:
+                message = message % args
+            thread_ident = _get_thread_ident()
+            _gevent_debug_log(
+                "%s [report %d/%d]: %s\n"
+                "  object: %s\n"
+                "  current: thread=0x%x is_main=%s greenlet=%s\n"
+                "  stack:\n%s"
+                % (
+                    kind, report, limit, message,
+                    self._debug_describe(probe).replace('\n', '\n    '),
+                    thread_ident, thread_ident == _MAIN_THREAD_IDENT,
+                    _debug_describe_greenlet(getcurrent()), # pylint:disable=undefined-variable
+                    ''.join(traceback.format_stack()),
+                )
+            )
+        except Exception: # pylint:disable=broad-except
+            _gevent_debug_log("%s: failed to report on 0x%x\n%s" % (kind, id(self), traceback.format_exc()))
+
+    def _debug_report_invalid_switch(self, the_hub, result):
+        # Another object's notifier switched into this waiter, so that object still
+        # held this greenlet's switch after the greenlet stopped waiting on it.
+        probe = getcurrent().switch # pylint:disable=undefined-variable
+        if isinstance(result, AbstractLinkable):
+            delivered = result._debug_describe(probe).replace('\n', '\n    ')
+            referrers = _debug_referrers(result)
+        else:
+            delivered = repr(result)
+            referrers = ''
+        self._debug_report(
+            'INVALID SWITCH', 10,
+            'resumed with %s 0x%x instead of this object; switched out to hub=%r hub_thread=%s\n'
+            '  delivering object: %s\n'
+            '  delivering object referrers:\n%s'
+            % (type(result).__name__, id(result), the_hub, _debug_thread(getattr(the_hub, 'thread_ident', None)),
+               delivered, referrers),
+            probe=probe)
+
+    def _debug_report_notifier_on_foreign_loop(self, hub):
+        # Called only when the notifier is scheduled on a non-main thread's loop.
+        # That loop may be idle (a finished real-thread job), and links that belong to
+        # greenlets of other hubs cannot be switched to from it.
+        other_threads = _debug_link_hub_threads(self._links) - {hub.thread_ident}
+        if other_threads:
+            self._debug_report(
+                'NOTIFIER ON FOREIGN LOOP', 20,
+                'scheduling the notifier on thread 0x%x loop=%r while links belong to greenlets of '
+                'threads %s' % (hub.thread_ident, hub.loop, [_debug_thread(t) for t in other_threads]))
+
+    def _debug_report_hub_dropped(self):
+        # Called only when a fully released BoundedSemaphore drops its hub with waiters linked.
+        if _get_thread_ident() != _MAIN_THREAD_IDENT:
+            self._debug_report(
+                'HUB DROPPED OFF MAIN THREAD', 20,
+                'fully released from a non-main thread with waiters linked; the next '
+                'notifier will be scheduled on whichever hub captures the object')
+
     def _switch_to_hub(self, the_hub):
         self._drop_lock_for_switch_out()
         try:
@@ -594,6 +794,7 @@ class AbstractLinkable(object):
         finally:
             self._acquire_lock_for_switch_in()
         if result is not self: # pragma: no cover
+            self._debug_report_invalid_switch(the_hub, result)
             raise InvalidSwitchError(
                 'Invalid switch into %s.wait(): %r' % (
                     self.__class__.__name__,

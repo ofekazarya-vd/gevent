@@ -335,6 +335,12 @@ class Semaphore(AbstractLinkable): # pylint:disable=undefined-variable
         owning_hub = ex_args[0]
         hub_for_this_thread = ex_args[1]
         current_greenlet = ex_args[2]
+        self._debug_report(
+            'CROSS-THREAD ACQUIRE', 20,
+            'acquiring from a thread that does not own the object: reason=%s owning_hub=%r '
+            'this_thread_hub=%r timeout=%s', (
+                ex_args[3] if len(ex_args) > 3 else 'InvalidThreadUse',
+                owning_hub, hub_for_this_thread, timeout))
 
         if owning_hub is None and hub_for_this_thread is None:
             return self.__acquire_without_hubs(timeout)
@@ -503,6 +509,8 @@ class BoundedSemaphore(Semaphore):
         # release our hub and go back to floating. This assists in cross-thread
         # uses.
         if counter == self._initial_value:
+            if self._links:
+                self._debug_report_hub_dropped()
             self.hub = None # pylint:disable=attribute-defined-outside-init
         return counter
 
